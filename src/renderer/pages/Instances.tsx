@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { InstanceKind } from '../../shared/types';
+import { ImportPackButton } from '../components/ChaldPackDialogs';
 import { Icon } from '../components/Icon';
 import { InstanceCard } from '../components/InstanceCard';
 import { InstanceDialogs, type InstanceDialog } from '../components/InstanceMenu';
@@ -46,6 +47,7 @@ export function InstancesPage() {
             <Icon name="search" size={18} />
             <input className="input" type="search" placeholder="Поиск по инстансам…" aria-label="Поиск по инстансам" value={query} onChange={(e) => setQuery(e.target.value)} />
           </div>
+          <ImportPackButton />
           <button className="btn btn--outline" onClick={() => openWizard()}><Icon name="plus" size={18} /> Создать инстанс</button>
         </header>
 

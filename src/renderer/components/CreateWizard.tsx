@@ -186,7 +186,7 @@ export function CreateWizard() {
       {step === 2 && (
         <div className="stack">
           <p className="muted">Пустое поле означает «как в общих настройках». Всё можно изменить позже.</p>
-          <SettingsFields draft={draft} onChange={setDraft} />
+          <SettingsFields draft={draft} onChange={setDraft} memory={{ modCount: 0, loader }} />
         </div>
       )}
 

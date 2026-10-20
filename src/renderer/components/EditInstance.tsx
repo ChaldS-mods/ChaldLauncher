@@ -78,7 +78,7 @@ export function EditInstance({ inst, onClose }: { inst: InstanceView; onClose: (
           <div className="form-grid__wide"><Field label="Описание"><input className="input" maxLength={120} value={description} onChange={(e) => setDescription(e.target.value)} /></Field></div>
         </div>
         <h3 className="section-title">Настройки запуска</h3>
-        <SettingsFields draft={draft} onChange={setDraft} />
+        <SettingsFields draft={draft} onChange={setDraft} memory={{ modCount: inst.modCount, loader: inst.loader.type }} />
         {error && <p className="form-error" role="alert">{error}</p>}
       </div>
     </Modal>

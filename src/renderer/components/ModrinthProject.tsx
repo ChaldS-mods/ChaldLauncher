@@ -32,10 +32,12 @@ interface Props {
   vanillaMods: boolean;
   filterMc: string | null;
   filterLoader: 'fabric' | 'quilt' | 'forge' | 'neoforge' | null;
+  installed: boolean;
+  onChanged: () => void;
   onBack: () => void;
 }
 
-export function ModrinthProject({ hit, inst, locked, vanillaMods, filterMc, filterLoader, onBack }: Props) {
+export function ModrinthProject({ hit, inst, locked, vanillaMods, filterMc, filterLoader, installed, onChanged, onBack }: Props) {
   const toast = useStore((s) => s.toast);
   const ops = useStore((s) => s.ops);
   const refreshInstances = useStore((s) => s.refreshInstances);
@@ -74,7 +76,7 @@ export function ModrinthProject({ hit, inst, locked, vanillaMods, filterMc, filt
   const packOp = ops[`modpack:${hit.id}`];
   const packRunning = packOp?.status === 'running';
   const working = busy || packRunning;
-  const disabled = working || (!isPack && (!inst || locked || vanillaMods));
+  const disabled = working || (!isPack && installed) || (!isPack && (!inst || locked || vanillaMods));
 
   const install = async (versionId: string | null) => {
     setBusy(true);
@@ -86,6 +88,7 @@ export function ModrinthProject({ hit, inst, locked, vanillaMods, filterMc, filt
         const files = await call('modrinth:install', { id: inst.id, projectId: hit.id, kind: hit.type as 'mod' | 'resourcepack', versionId });
         toast('ok', files.length > 1 ? `Установлено: ${hit.title} и зависимости (${files.length} файла)` : `Установлено: ${hit.title}`);
         void refreshInstances();
+        onChanged();
       }
     } catch (e) {
       toast('error', errMsg(e));
@@ -95,7 +98,8 @@ export function ModrinthProject({ hit, inst, locked, vanillaMods, filterMc, filt
   };
 
   const chosenVersion = versions?.find((v) => v.id === chosen) ?? null;
-  const label = working ? 'Установка…' : isPack ? 'Установить сборку' : 'Установить';
+  const isDone = !isPack && installed;
+  const label = working ? 'Установка…' : isDone ? 'Установлено' : isPack ? 'Установить сборку' : 'Установить';
 
   return (
     <div className="page">
@@ -129,11 +133,12 @@ export function ModrinthProject({ hit, inst, locked, vanillaMods, filterMc, filt
           </select>
           {chosenVersion && <p className="muted mr-install__hint">{chosenVersion.fileName} · {size(chosenVersion.size)}{chosenVersion.requiredDeps > 0 ? ` · обязательных зависимостей: ${chosenVersion.requiredDeps} (поставятся сами)` : ''}</p>}
         </div>
-        <button className="btn btn--primary btn--lg-static" disabled={disabled} onClick={() => void install(chosen || null)}>{label}</button>
+        <button className={`btn ${isDone ? 'btn--done' : 'btn--primary'} btn--lg-static`} disabled={disabled} onClick={() => void install(chosen || null)}>{label}</button>
         <button className="btn" onClick={() => void call('modrinth:openPage', { type: hit.type, slug: hit.slug }).catch((e) => toast('error', errMsg(e)))}>Открыть на сайте</button>
       </section>
 
       {packRunning && <p className="muted mr-op">{packOp.label}</p>}
+      {isDone && <p className="muted mr-install__hint">Уже стоит в «{inst?.name}». Чтобы поставить другую версию, сначала удали файл на вкладке «Моды» или «Ресурспаки».</p>}
       {!isPack && !inst && <p className="notice"><Icon name="alert" size={16} /> Сначала создай или выбери инстанс: файлы скачиваются в него.</p>}
       {vanillaMods && <p className="notice"><Icon name="alert" size={16} /> Это инстанс Vanilla: моды в нём не загружаются. Выбери инстанс с Fabric, Quilt, Forge или NeoForge.</p>}
       {!isPack && locked && <p className="notice"><Icon name="alert" size={16} /> {inst?.running ? 'Игра запущена: останови её, чтобы ставить файлы.' : 'Идёт установка инстанса: подожди её окончания.'}</p>}
@@ -188,7 +193,7 @@ export function ModrinthProject({ hit, inst, locked, vanillaMods, filterMc, filt
                       </details>
                     )}
                   </div>
-                  <button className="btn btn--primary" disabled={disabled} onClick={() => void install(v.id)}>{working ? 'Установка…' : 'Установить'}</button>
+                  <button className={`btn ${isDone ? 'btn--done' : 'btn--primary'}`} disabled={disabled} onClick={() => void install(v.id)}>{working ? 'Установка…' : isDone ? 'Установлено' : 'Установить'}</button>
                 </li>
               ))}
             </ul>

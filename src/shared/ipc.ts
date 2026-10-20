@@ -1,7 +1,8 @@
 import type {
-  AppInfo, AppSettings, AuthState, ContentEntry, GameLogEvent, GameStatusEvent, InstanceView, JavaInstall,
-  LoaderType, LoaderVersionEntry, McVersionEntry, ModrinthProjectInfo, ModrinthSearchInput, ModrinthSearchResult, ModrinthType, ModrinthVersionInfo, ModrinthVersionsInput, NetEntry, OpProgress, UpdateInfo, DeviceCodeInfo,
+  AccountSkin, AppInfo, ChaldPackExportResult, ChaldPackSummary, AppSettings, AuthState, ContentEntry, GameLogEvent, GameStatusEvent, InstanceView, JavaInstall,
+  LoaderType, LoaderVersionEntry, McVersionEntry, ModrinthProjectInfo, ModrinthSearchInput, ModrinthSearchResult, ModrinthType, ModrinthVersionInfo, ModrinthVersionsInput, NetEntry, OpProgress, SkinEntry, SkinImportResult, UpdateInfo, DeviceCodeInfo,
 } from './types';
+import type { SkinVariant } from './skin';
 import type { CreateInstanceInput, UpdateInstanceInput } from './schemas';
 
 type Ch<Req, Res> = { req: Req; res: Res };
@@ -38,10 +39,30 @@ export interface IpcContract {
   'modrinth:openPage': Ch<{ type: ModrinthType; slug: string }, void>;
   /** versionId = a specific version; omitted/null = newest compatible */
   'modrinth:install': Ch<{ id: string; projectId: string; kind: 'mod' | 'resourcepack'; versionId?: string | null }, string[]>;
+  /** ids of Modrinth projects already installed in the instance */
+  'modrinth:installed': Ch<{ id: string; kind: 'mod' | 'resourcepack' }, string[]>;
   'modrinth:installPack': Ch<{ projectId: string; versionId?: string | null }, void>;
   'modrinth:cancelPack': Ch<{ projectId: string }, void>;
 
+  /** opens a file dialog, validates the chosen .chaldlauncher file; null = dialog cancelled. Nothing is written. */
+  'chaldpack:inspect': Ch<void, { token: string; summary: ChaldPackSummary } | null>;
+  /** creates the instance from an inspected file; progress comes as op:progress (opId modpack:chald:<token>) */
+  'chaldpack:import': Ch<{ token: string }, void>;
+  /** save dialog + export; null = dialog cancelled */
+  'chaldpack:export': Ch<{ id: string; includeWorlds: boolean }, (ChaldPackExportResult & { file: string }) | null>;
+
+  'wardrobe:list': Ch<void, SkinEntry[]>;
+  'wardrobe:import': Ch<void, SkinImportResult>;
+  'wardrobe:update': Ch<{ id: string; patch: { name?: string; variant?: SkinVariant } }, SkinEntry>;
+  'wardrobe:remove': Ch<{ id: string; confirm: true }, void>;
+  /** Microsoft account only: the skin that is on the account now (null = none) */
+  'wardrobe:current': Ch<void, AccountSkin | null>;
+  'wardrobe:saveCurrent': Ch<{ name: string }, SkinImportResult>;
+  'wardrobe:apply': Ch<{ id: string }, AccountSkin>;
+  'wardrobe:reset': Ch<void, void>;
+
   'java:detect': Ch<void, JavaInstall[]>;
+  'system:memory': Ch<void, { totalMb: number; freeMb: number }>;
 
   'auth:state': Ch<void, AuthState>;
   'auth:login': Ch<{ method: 'browser' | 'code' }, AuthState>;

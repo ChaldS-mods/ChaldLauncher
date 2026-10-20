@@ -9,8 +9,11 @@ npm install
 npm run dev        # разработка (Vite + Electron)
 npm run build      # сборка
 npm test           # тесты
-npm run dist       # установщик (electron-builder)
+npm run dist:dir    # лаунчер без установщика -> release/win-unpacked
+npm run installer   # свой установщик -> installer/release/ChaldLauncher-Setup.exe
 ```
+
+Установщик описан в `installer/README.md`.
 
 ## Загрузчики
 
@@ -43,8 +46,7 @@ Mojang, не предназначен для чужих программ, и л�
 4. Скопируй Application (client) ID.
 5. Подай заявку на доступ к Minecraft API: https://aka.ms/AppRegInfo (без одобрения Mojang вход закончится ошибкой
    вида «Invalid app registration»).
-6. Вставь ID в `src/main/config.ts` (`DEFAULT_MS_CLIENT_ID`), чтобы он работал у всех пользователей,
-   либо введи его в Настройках → Аккаунт.
+6. Вставь ID в `src/main/config.ts` (`DEFAULT_MS_CLIENT_ID`), чтобы он работал у всех пользователей. Поля для ввода в интерфейсе нет: ID зашит в сборку.
 
 Вход идёт через системный браузер (PKCE, временный локальный порт). Если он недоступен, есть вход по коду.
 Токены хранятся только в зашифрованном виде (safeStorage).

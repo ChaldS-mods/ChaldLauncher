@@ -41,6 +41,7 @@ const NAV: { page: Page; label: string; icon: string }[] = [
   { page: 'versions', label: 'Версии', icon: 'layers' },
   { page: 'mods', label: 'Моды', icon: 'puzzle' },
   { page: 'resourcepacks', label: 'Ресурспаки', icon: 'image' },
+  { page: 'wardrobe', label: 'Гардероб', icon: 'shirt' },
   { page: 'modrinth', label: 'Modrinth', icon: 'download' },
   { page: 'console', label: 'Консоль', icon: 'terminal' },
   { page: 'settings', label: 'Настройки', icon: 'gear' },

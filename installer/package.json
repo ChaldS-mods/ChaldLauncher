@@ -1,0 +1,36 @@
+{
+  "name": "chald-installer",
+  "productName": "ChaldLauncher Setup",
+  "version": "0.1.0",
+  "description": "Установщик ChaldLauncher",
+  "author": "Chald Studio",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-ui.mjs",
+    "payload": "npm run build && node scripts/pack-payload.mjs",
+    "dev": "npm run build && electron .",
+    "test": "npm run build && node --test \"tests/**/*.test.mjs\"",
+    "dist": "npm run payload && electron-builder"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "electron": "^44.9.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^7.0.2"
+  },
+  "build": {
+    "appId": "studio.chald.installer",
+    "productName": "ChaldLauncher Setup",
+    "directories": { "output": "release" },
+    "files": ["dist/**/*", "package.json"],
+    "extraResources": [{ "from": "payload/payload.chpk", "to": "payload.chpk" }],
+    "compression": "normal",
+    "win": {
+      "target": [{ "target": "portable", "arch": ["x64"] }],
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "portable": { "artifactName": "ChaldLauncher-Setup.exe" }
+  }
+}

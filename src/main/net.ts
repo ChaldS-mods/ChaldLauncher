@@ -31,7 +31,8 @@ const ALLOWED_HOSTS: Record<string, string> = {
   'login.microsoftonline.com': 'Вход Microsoft',
   'user.auth.xboxlive.com': 'Вход Xbox Live',
   'xsts.auth.xboxlive.com': 'Вход Xbox Live (XSTS)',
-  'api.minecraftservices.com': 'Профиль Minecraft',
+  'api.minecraftservices.com': 'Профиль Minecraft и смена скина',
+  'textures.minecraft.net': 'Скины Minecraft (текущий скин аккаунта)',
 };
 
 const extraHosts = new Set<string>();
@@ -72,6 +73,20 @@ export interface NetResult {
   entry: NetEntry;
 }
 
+/** Human-readable reason for a failed fetch (undici hides it in `cause`). */
+function networkReason(e: unknown): string {
+  const cause = (e as { cause?: { code?: string; message?: string } } | null)?.cause;
+  const code = cause?.code ?? '';
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'не удалось найти сервер (проверь интернет или DNS)';
+  if (code === 'ETIMEDOUT' || code.includes('TIMEOUT')) return 'сервер не ответил вовремя';
+  if (code === 'ECONNRESET' || code === 'UND_ERR_SOCKET') return 'соединение было разорвано';
+  if (code === 'ECONNREFUSED') return 'сервер отклонил соединение';
+  if (code.startsWith('CERT_') || code.includes('SSL') || code.includes('TLS')) return `ошибка защищённого соединения (${code})`;
+  return cause?.message ?? code ?? (e instanceof Error ? e.message : String(e));
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 export async function netRequest(
   url: string,
   init: RequestInit & { purpose: string },
@@ -81,24 +96,33 @@ export async function netRequest(
   const method = (rest.method ?? 'GET').toUpperCase();
   for (let hop = 0; hop < 6; hop++) {
     checkUrl(current);
-    const entry: NetEntry = {
-      id: ++counter,
-      time: new Date().toISOString(),
-      method,
-      host: current.host,
-      path: current.pathname, // query is intentionally not logged
-      status: null,
-      bytes: null,
-      purpose,
-      error: null,
-    };
-    push(entry);
-    let res: Response;
-    try {
-      res = await fetch(current, { ...rest, redirect: 'manual' });
-    } catch (e) {
-      entry.error = e instanceof Error ? e.message : String(e);
-      throw e;
+    let entry!: NetEntry;
+    let res!: Response;
+    // A dropped connection is common on bad networks: a GET is safe to repeat, so try up to 3 times.
+    for (let attempt = 0; ; attempt++) {
+      entry = {
+        id: ++counter,
+        time: new Date().toISOString(),
+        method,
+        host: current.host,
+        path: current.pathname, // query is intentionally not logged
+        status: null,
+        bytes: null,
+        purpose,
+        error: null,
+      };
+      push(entry);
+      try {
+        res = await fetch(current, { ...rest, redirect: 'manual' });
+        break;
+      } catch (e) {
+        entry.error = e instanceof Error ? e.message : String(e);
+        if (rest.signal?.aborted || (e instanceof Error && e.name === 'AbortError')) throw e;
+        if (method !== 'GET' || attempt >= 2) {
+          throw new AppError('NET_FAILED', `Нет связи с ${current.host}: ${networkReason(e)}. Проверь интернет и повтори.`);
+        }
+        await sleep(400 * 2 ** attempt);
+      }
     }
     entry.status = res.status;
     if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {

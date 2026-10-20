@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { appSettingsSchema, offlineNameSchema } from '../../shared/schemas';
+import { offlineNameSchema } from '../../shared/schemas';
 import type { AccountMode } from '../../shared/types';
 import { call, errMsg } from '../api';
 import { useStore } from '../store';
@@ -16,9 +16,8 @@ function NotConfiguredModal({ onClose, onOffline }: { onClose: () => void; onOff
       footer={<><button className="btn" onClick={onClose}>Закрыть</button><button className="btn btn--primary" onClick={onOffline}>Использовать офлайн-режим</button></>}
     >
       <div className="stack">
-        <p>Для входа через Microsoft лаунчеру нужен <strong>Azure Client ID</strong> — идентификатор приложения, которое зарегистрировал ты (или Chald Studio). Идентификатор официального Minecraft Launcher использовать нельзя: это чужая регистрация.</p>
-        <p className="muted">Как получить свой ID: зарегистрируй приложение в Azure, подай заявку в Mojang на доступ к API Minecraft и вставь Client ID в поле ниже. Подробные шаги — в README проекта.</p>
-        <p>Пока ID нет, можно играть в офлайн-режиме. {OFFLINE_WARNING}</p>
+        <p>Вход через Microsoft в этой сборке ещё не настроен. Это проблема сборки, а не твоего аккаунта.</p>
+        <p>Пока вход недоступен, можно играть в офлайн-режиме. {OFFLINE_WARNING}</p>
       </div>
     </Modal>
   );
@@ -27,15 +26,13 @@ function NotConfiguredModal({ onClose, onOffline }: { onClose: () => void; onOff
 export function AccountSection() {
   const auth = useStore((s) => s.auth);
   const settings = useStore((s) => s.settings);
-  const { setAccountMode, setOffline, saveSettings, login, toast } = useStore.getState();
+  const { setAccountMode, setOffline, login, toast } = useStore.getState();
   const [nick, setNick] = useState(settings?.offlineName ?? '');
-  const [clientId, setClientId] = useState(settings?.msClientId ?? '');
   const [nickErr, setNickErr] = useState<string | null>(null);
-  const [idErr, setIdErr] = useState<string | null>(null);
   const [explain, setExplain] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => { if (settings) { setNick(settings.offlineName); setClientId(settings.msClientId); } }, [settings?.offlineName, settings?.msClientId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (settings) { setNick(settings.offlineName); } }, [settings?.offlineName]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!auth || !settings) return null;
   const mode = auth.mode;
 
@@ -47,12 +44,6 @@ export function AccountSection() {
     if (!p.success) return setNickErr(p.error.issues[0]?.message ?? 'Некорректный ник');
     setNickErr(null);
     try { await setOffline(p.data); toast('ok', `Офлайн-профиль: ${p.data}`); } catch (e) { setNickErr(errMsg(e)); }
-  };
-  const saveId = async () => {
-    const p = appSettingsSchema.shape.msClientId.safeParse(clientId.trim());
-    if (!p.success) return setIdErr(p.error.issues[0]?.message ?? 'Некорректный Client ID');
-    setIdErr(null);
-    try { await saveSettings({ msClientId: p.data }); toast('ok', p.data ? 'Client ID сохранён' : 'Client ID удалён'); } catch (e) { setIdErr(errMsg(e)); }
   };
   const msLogin = async (method: 'browser' | 'code') => {
     if (!auth.configured) return setExplain(true);
@@ -90,12 +81,6 @@ export function AccountSection() {
               )}
           </div>
           {!auth.encryptionAvailable && <p className="form-error" role="note"><Icon name="alert" size={16} /> Шифрование системного хранилища недоступно: сессия не будет сохраняться между запусками.</p>}
-          <Field label="Azure Client ID" error={idErr} hint={auth.configured ? 'Идентификатор твоего приложения Azure' : 'Не задан — вход через Microsoft недоступен'}>
-            <div className="row">
-              <input className="input" value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="00000000-0000-0000-0000-000000000000" spellCheck={false} aria-invalid={!!idErr} />
-              <button type="button" className="btn" onClick={() => void saveId()} disabled={clientId.trim() === settings.msClientId}>Сохранить</button>
-            </div>
-          </Field>
         </>
       ) : (
         <>

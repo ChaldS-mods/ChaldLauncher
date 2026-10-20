@@ -10,6 +10,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   javaPath: '',
   memoryMinMb: 1024,
   memoryMaxMb: 4096,
+  memoryAuto: true,
   jvmArgs: '-XX:+UseG1GC',
   width: 1280,
   height: 720,

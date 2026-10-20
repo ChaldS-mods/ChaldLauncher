@@ -106,7 +106,7 @@ export async function downloadFile(spec: DownloadSpec, opts: DownloadOptions = {
     } catch (e) {
       if (isAbort(e) || opts.signal?.aborted) throw e;
       lastError = e;
-      const retryable = e instanceof RetryableError || !(e instanceof AppError);
+      const retryable = e instanceof RetryableError || !(e instanceof AppError) || e.code === 'NET_FAILED';
       if (!retryable || i === retries) break;
       await new Promise((r) => setTimeout(r, delay * 2 ** i));
     }

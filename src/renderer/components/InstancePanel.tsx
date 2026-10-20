@@ -1,5 +1,6 @@
 import type { InstanceView } from '../../shared/types';
 import { activeOp, useStore } from '../store';
+import { recommendMemory } from '../../shared/memory';
 import { KIND_LABEL, formatDate, loaderText, memoryText } from '../util';
 import { Icon } from './Icon';
 import { Cover, Menu, ProgressBar } from './ui';
@@ -55,8 +56,11 @@ export function InstancePanel({ inst, openDialog }: { inst: InstanceView; openDi
   const settings = useStore((s) => s.settings);
   const go = useStore((s) => s.go);
   const s = inst.settings;
-  const min = s.memoryMinMb ?? settings?.memoryMinMb;
-  const max = s.memoryMaxMb ?? settings?.memoryMaxMb;
+  const sys = useStore((st) => st.sysMemory);
+  const ownBoth = s.memoryMinMb != null && s.memoryMaxMb != null;
+  const auto = settings?.memoryAuto && !ownBoth && sys ? recommendMemory({ totalMb: sys.totalMb, modCount: inst.modCount, loader: inst.loader.type }) : null;
+  const min = s.memoryMinMb ?? auto?.minMb ?? settings?.memoryMinMb;
+  const max = s.memoryMaxMb ?? auto?.maxMb ?? settings?.memoryMaxMb;
   const w = s.width ?? settings?.width;
   const h = s.height ?? settings?.height;
   const full = s.fullscreen ?? settings?.fullscreen;
@@ -101,7 +105,7 @@ export function InstancePanel({ inst, openDialog }: { inst: InstanceView; openDi
 
       <section className="pcard">
         <h3><Icon name="gear" size={16} /> Настройки запуска</h3>
-        <Row icon="terminal" label="Память" value={min && max ? `${memoryText(min)} – ${memoryText(max)}` : '—'} />
+        <Row icon="terminal" label="Память" value={min && max ? `${auto ? 'авто: ' : ''}${memoryText(min)} – ${memoryText(max)}` : '—'} />
         <Row icon="image" label="Разрешение" value={full ? 'Полный экран' : w && h ? `${w}×${h}` : '—'} />
         <Row icon="terminal" label="JVM аргументы" value={jvm || '—'} />
       </section>

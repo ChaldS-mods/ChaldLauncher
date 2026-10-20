@@ -177,7 +177,15 @@ export async function assertLoaderCompatible(loader: Exclude<LoaderType, 'vanill
   if (loader === 'forge' && !forgeSupportsMc(mcVersion)) {
     throw new AppError('LOADER_INCOMPATIBLE', 'Forge поддерживается для Minecraft 1.13 и новее');
   }
-  const list = await loaderVersions(loader, mcVersion);
+  let list: LoaderVersionEntry[];
+  try {
+    list = await loaderVersions(loader, mcVersion);
+  } catch (e) {
+    // No connection to the version list is not proof of incompatibility: the download of the loader itself
+    // will report a real network problem, and an already cached installation can still work offline.
+    if (e instanceof AppError && e.code === 'NET_FAILED') return;
+    throw e;
+  }
   if (list.length === 0) throw new AppError('LOADER_INCOMPATIBLE', `${title} не поддерживает Minecraft ${mcVersion}`);
   if (!list.some((l) => l.version === loaderVersion)) {
     throw new AppError('LOADER_INCOMPATIBLE', `${title} ${loaderVersion} не подходит для Minecraft ${mcVersion}`);

@@ -4,14 +4,16 @@ import type { AppSettings, JavaInstall } from '../../shared/types';
 import { call, errMsg } from '../api';
 import { AccountSection } from '../components/AccountSection';
 import { Icon } from '../components/Icon';
+import { MemorySliders } from '../components/MemorySliders';
 import { Field, Switch } from '../components/ui';
+import { recommendMemory } from '../../shared/memory';
 import { useStore } from '../store';
-import { numOrNull } from '../util';
+import { memoryText, numOrNull } from '../util';
 
-type Draft = { instancesDir: string; downloadsDir: string; javaPath: string; min: string; max: string; jvmArgs: string; width: string; height: string; fullscreen: boolean; closeBehavior: AppSettings['closeBehavior']; checkUpdates: boolean; updateRepo: string };
+type Draft = { instancesDir: string; downloadsDir: string; javaPath: string; memAuto: boolean; min: number; max: number; jvmArgs: string; width: string; height: string; fullscreen: boolean; closeBehavior: AppSettings['closeBehavior']; checkUpdates: boolean; updateRepo: string };
 
 const toDraft = (s: AppSettings): Draft => ({
-  instancesDir: s.instancesDir, downloadsDir: s.downloadsDir, javaPath: s.javaPath, min: String(s.memoryMinMb), max: String(s.memoryMaxMb), jvmArgs: s.jvmArgs,
+  instancesDir: s.instancesDir, downloadsDir: s.downloadsDir, javaPath: s.javaPath, memAuto: s.memoryAuto, min: s.memoryMinMb, max: s.memoryMaxMb, jvmArgs: s.jvmArgs,
   width: String(s.width), height: String(s.height), fullscreen: s.fullscreen, closeBehavior: s.closeBehavior, checkUpdates: s.checkUpdates, updateRepo: s.updateRepo,
 });
 
@@ -23,6 +25,8 @@ export function SettingsPage() {
   const settings = useStore((s) => s.settings);
   const info = useStore((s) => s.info);
   const update = useStore((s) => s.update);
+  const sys = useStore((s) => s.sysMemory);
+  const sel = useStore((s) => s.selected());
   const { saveSettings, toast, checkUpdate } = useStore.getState();
   const [d, setD] = useState<Draft | null>(settings ? toDraft(settings) : null);
   const [error, setError] = useState<string | null>(null);
@@ -31,8 +35,10 @@ export function SettingsPage() {
   const [detecting, setDetecting] = useState(false);
 
   useEffect(() => { if (settings && !d) setD(toDraft(settings)); }, [settings, d]);
+  useEffect(() => { void useStore.getState().refreshMemory(); }, []);
   if (!settings || !d) return null;
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setD({ ...d, [k]: v });
+  const advice = sys ? recommendMemory({ totalMb: sys.totalMb, modCount: sel?.modCount ?? 0, loader: sel?.loader.type ?? 'vanilla' }) : null;
   const dirty = JSON.stringify(d) !== JSON.stringify(toDraft(settings));
 
   const pick = async (k: 'instancesDir' | 'downloadsDir', title: string) => {
@@ -43,9 +49,9 @@ export function SettingsPage() {
     try { setJavas(await call('java:detect')); } catch (e) { toast('error', errMsg(e)); } finally { setDetecting(false); }
   };
   const save = async () => {
-    const nums = { memoryMinMb: numOrNull(d.min), memoryMaxMb: numOrNull(d.max), width: numOrNull(d.width), height: numOrNull(d.height) };
+    const nums = { width: numOrNull(d.width), height: numOrNull(d.height) };
     for (const [k, v] of Object.entries(nums)) if (v === null || Number.isNaN(v)) return setError(`Поле «${k}»: нужно число`);
-    const next = { ...settings, instancesDir: d.instancesDir.trim(), downloadsDir: d.downloadsDir.trim(), javaPath: d.javaPath.trim(), jvmArgs: d.jvmArgs, fullscreen: d.fullscreen, closeBehavior: d.closeBehavior, checkUpdates: d.checkUpdates, updateRepo: d.updateRepo.trim(), ...nums };
+    const next = { ...settings, instancesDir: d.instancesDir.trim(), downloadsDir: d.downloadsDir.trim(), javaPath: d.javaPath.trim(), memoryAuto: d.memAuto, memoryMinMb: d.min, memoryMaxMb: d.max, jvmArgs: d.jvmArgs, fullscreen: d.fullscreen, closeBehavior: d.closeBehavior, checkUpdates: d.checkUpdates, updateRepo: d.updateRepo.trim(), ...nums };
     const p = appSettingsSchema.safeParse(next);
     if (!p.success) return setError(p.error.issues[0]?.message ?? 'Проверь поля');
     setSaving(true);
@@ -84,9 +90,19 @@ export function SettingsPage() {
       </Section>
 
       <Section icon="cube" title="Память и запуск">
+        <div className="row row--between"><span>Подбирать память автоматически</span><Switch checked={d.memAuto} label="Подбирать память автоматически" onChange={(v) => set('memAuto', v)} /></div>
+        {d.memAuto ? (
+          <div className="stack">
+            <p className="muted">
+              Лаунчер сам считает объём под каждый инстанс: берёт больше памяти для сборок с большим числом модов, но оставляет системе запас от ОЗУ компьютера
+              {sys ? ` (у тебя ${memoryText(sys.totalMb)})` : ''}. Свой объём можно задать в настройках конкретного инстанса.
+            </p>
+            {advice && <p>Для выбранного инстанса{sel ? ` «${sel.name}»` : ''} сейчас: <strong>{memoryText(advice.minMb)} – {memoryText(advice.maxMb)}</strong>{advice.limitedBy === 'machine' ? ' (ограничено памятью компьютера)' : ''}</p>}
+          </div>
+        ) : (
+          <MemorySliders minMb={d.min} maxMb={d.max} onChange={(a, b) => setD({ ...d, min: a, max: b })} sys={sys} advice={advice} />
+        )}
         <div className="form-grid">
-          <Field label="Память, минимум (МБ)"><input className="input" inputMode="numeric" value={d.min} onChange={(e) => set('min', e.target.value)} /></Field>
-          <Field label="Память, максимум (МБ)"><input className="input" inputMode="numeric" value={d.max} onChange={(e) => set('max', e.target.value)} /></Field>
           <Field label="Ширина окна"><input className="input" inputMode="numeric" value={d.width} onChange={(e) => set('width', e.target.value)} /></Field>
           <Field label="Высота окна"><input className="input" inputMode="numeric" value={d.height} onChange={(e) => set('height', e.target.value)} /></Field>
           <div className="form-grid__wide"><Field label="Аргументы JVM" hint="Общие для всех инстансов"><input className="input" value={d.jvmArgs} onChange={(e) => set('jvmArgs', e.target.value)} spellCheck={false} /></Field></div>

@@ -9,11 +9,15 @@ import { GameManager } from './launcher';
 import { InstanceStore, type InstanceCtx } from './instances';
 import { installVersion } from './installer';
 import { downloadFile } from './download';
+import { exportInstance, inspectPack, installedIndexFor, packToPlan, type ChaldPack, type ExportResult, type PackSummary } from './chaldpack';
+import { randomBytes } from 'node:crypto';
+import { writeJsonAtomic } from './storage';
 import {
   ModrinthApi, downloadPackFiles, extractOverrides, pickVersion, planInstall, planPack, primaryFile, readMrpackIndex, runInstallPlan,
 } from './modrinth';
 import { safeFileName } from './paths';
 import { SettingsStore } from './settings';
+import { WardrobeService } from './wardrobe';
 import { VersionCatalog } from './versions';
 
 export interface ServicesOptions {
@@ -31,9 +35,12 @@ export class Services {
   readonly instances: InstanceStore;
   readonly auth: AuthService;
   readonly games: GameManager;
+  readonly wardrobe: WardrobeService;
   readonly installs = new Map<string, AbortController>();
   readonly packs = new Map<string, AbortController>();
   readonly modrinth: ModrinthApi;
+  /** .chaldlauncher files the user picked and we validated, waiting for the confirmation click */
+  private pendingPacks = new Map<string, { file: string; manifest: ChaldPack }>();
   /** Sync copy of settings for places that cannot await (window close handler). */
   closeBehavior: AppSettings['closeBehavior'] = 'quit';
 
@@ -48,7 +55,7 @@ export class Services {
       o.box,
       async () => {
         const s = await this.settings.get();
-        return { mode: s.accountMode, offlineName: s.offlineName, msClientId: s.msClientId || DEFAULT_MS_CLIENT_ID };
+        return { mode: s.accountMode, offlineName: s.offlineName, msClientId: DEFAULT_MS_CLIENT_ID };
       },
       async (patch) => {
         await this.settings.set({
@@ -60,6 +67,13 @@ export class Services {
       o.openExternal,
       (s: AuthState) => o.emit('auth:changed', s),
     );
+    this.wardrobe = new WardrobeService(path.join(o.dataDir, 'wardrobe'), {
+      getToken: async () => {
+        const st = await this.auth.state();
+        if (st.mode !== 'microsoft' || !st.loggedIn) throw new AppError('WARDROBE_NEEDS_MS', 'Скин на аккаунте можно менять только после входа через Microsoft (офлайн-режим скин не поддерживает).');
+        return (await this.auth.getLaunchAuth()).accessToken;
+      },
+    });
     this.games = new GameManager({
       dirs: this.dirs,
       instances: this.instances,
@@ -197,6 +211,65 @@ export class Services {
         else emit(`Не удалось установить «${title}»`, null, 'error', e instanceof Error ? e.message : String(e));
       }
     })();
+  }
+
+  /** Validates a picked .chaldlauncher file and remembers it under a token; nothing is written yet. */
+  inspectChaldPack(file: string): { token: string; summary: PackSummary } {
+    const { manifest, summary } = inspectPack(file);
+    if (this.pendingPacks.size >= 5) this.pendingPacks.delete(this.pendingPacks.keys().next().value!);
+    const token = randomBytes(8).toString('hex');
+    this.pendingPacks.set(token, { file, manifest });
+    return { token, summary };
+  }
+
+  /** Creates an instance from a confirmed .chaldlauncher file: downloads the Modrinth files, unpacks the rest, installs Minecraft. */
+  startChaldPack(token: string): void {
+    const pending = this.pendingPacks.get(token);
+    if (!pending) throw new AppError('PACK_EXPIRED', 'Файл нужно выбрать заново');
+    this.pendingPacks.delete(token);
+    const { file, manifest } = pending;
+    const key = `chald:${token}`;
+    const ac = new AbortController();
+    this.packs.set(key, ac);
+    const opId = `modpack:${key}`;
+    let instanceId: string | null = null;
+    const emit = (label: string, fraction: number | null, status: OpProgress['status'] = 'running', message: string | null = null) =>
+      this.o.emit('op:progress', { opId, kind: 'modpack', instanceId, label, fraction, status, message });
+    emit(`Импорт «${manifest.name}»…`, null);
+
+    void (async () => {
+      try {
+        const { manifest: m } = inspectPack(file); // read again: the file may have changed since the preview
+        const inst = await this.instances.create({
+          name: m.name, description: m.description, mcVersion: m.mcVersion, loader: m.loader, kind: m.kind, coverColor: m.coverColor,
+          settings: { javaPath: '', memoryMinMb: null, memoryMaxMb: null, jvmArgs: '', width: null, height: null, fullscreen: null },
+        }, this.ctx());
+        instanceId = inst.id;
+        const gameDir = await this.instances.gameDir(inst.id);
+        await downloadPackFiles(packToPlan(m), gameDir, (l, f) => emit(l, f * 0.85), ac.signal);
+        emit('Копирую файлы из архива…', 0.9);
+        await extractOverrides(file, gameDir, ac.signal);
+        await writeJsonAtomic(path.join(gameDir, '.chald-modrinth.json'), installedIndexFor(m));
+        this.packs.delete(key);
+        emit(`Инстанс «${m.name}» импортирован. Устанавливаю Minecraft…`, 1, 'done');
+        this.startInstall(inst.id);
+      } catch (e) {
+        this.packs.delete(key);
+        if (instanceId) await this.instances.remove(instanceId, true).catch(() => undefined);
+        instanceId = null;
+        if (isAbort(e) || ac.signal.aborted) emit('Импорт отменён', null, 'cancelled');
+        else emit(`Не удалось импортировать «${manifest.name}»`, null, 'error', e instanceof Error ? e.message : String(e));
+      }
+    })();
+  }
+
+  /** Writes the instance as a .chaldlauncher file. Modrinth files are only listed (checked against Modrinth), the rest is packed. */
+  async exportChaldPack(id: string, out: string, includeWorlds: boolean): Promise<ExportResult> {
+    if (this.installs.has(id)) throw new AppError('BUSY', 'Идёт установка инстанса: подожди её окончания');
+    if (includeWorlds && this.games.activeIds().has(id)) throw new AppError('BUSY', 'Останови игру, чтобы экспортировать миры');
+    const meta = await this.instances.readMeta(id);
+    const gameDir = await this.instances.gameDir(id);
+    return exportInstance({ gameDir, meta, includeWorlds, out, api: this.modrinth, report: () => undefined });
   }
 
   /** Opens the project page on modrinth.com in the system browser. */

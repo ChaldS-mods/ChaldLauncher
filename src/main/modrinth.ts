@@ -83,6 +83,16 @@ const versionDetailSchema = mrVersionSchema.extend({
   changelog: z.string().nullable().optional(),
 });
 
+export type MrVersionDetail = z.infer<typeof versionDetailSchema>;
+
+const projectLiteSchema = z.object({
+  id: z.string(),
+  slug: z.string(),
+  title: z.string(),
+  icon_url: z.string().nullable().optional(),
+});
+export type MrProjectLite = z.infer<typeof projectLiteSchema>;
+
 const hitSchema = z.object({
   project_id: z.string(),
   slug: z.string(),
@@ -249,6 +259,48 @@ export class ModrinthApi implements ModrinthLike {
   /** @param userAgent Modrinth asks every client to identify itself */
   constructor(private userAgent: string) {}
 
+  private post<T>(url: string, body: unknown, schema: z.ZodType<T>, signal?: AbortSignal): Promise<T> {
+    return netJson<unknown>(url, {
+      purpose: 'Modrinth',
+      signal,
+      method: 'POST',
+      headers: { 'User-Agent': this.userAgent, Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((j) => {
+      const r = schema.safeParse(j);
+      if (!r.success) throw new AppError('MODRINTH_FORMAT', 'Modrinth вернул неожиданный ответ');
+      return r.data;
+    });
+  }
+
+  /** Which Modrinth versions do these file hashes (SHA-1) belong to? Unknown files are simply missing from the result. */
+  identify(hashes: string[], signal?: AbortSignal): Promise<Record<string, MrVersionDetail>> {
+    return this.post(`${API}/version_files`, { hashes, algorithm: 'sha1' }, z.record(z.string(), versionDetailSchema), signal);
+  }
+
+  /** The newest version for the given Minecraft version and loaders, for every hash Modrinth knows. */
+  latest(hashes: string[], opts: { mcVersion: string; loaders: string[] }, signal?: AbortSignal): Promise<Record<string, MrVersionDetail>> {
+    return this.post(
+      `${API}/version_files/update`,
+      { hashes, algorithm: 'sha1', loaders: opts.loaders, game_versions: [opts.mcVersion] },
+      z.record(z.string(), versionDetailSchema), signal,
+    );
+  }
+
+  projectsLite(ids: string[], signal?: AbortSignal): Promise<MrProjectLite[]> {
+    if (!ids.length) return Promise.resolve([]);
+    return this.get(`${API}/projects?ids=${encodeURIComponent(JSON.stringify(ids))}`, z.array(projectLiteSchema), signal);
+  }
+
+  /** All versions of a project with full details (newest first), unlike the trimmed list of the project page. */
+  versionDetails(projectId: string, opts: { mcVersion?: string | null; loaders?: string[] | null }, signal?: AbortSignal): Promise<MrVersionDetail[]> {
+    return this.get(this.versionsUrl(projectId, opts), z.array(versionDetailSchema), signal);
+  }
+
+  iconData(url: string | null | undefined, signal?: AbortSignal): Promise<string | null> {
+    return this.icon(url, signal);
+  }
+
   private get<T>(url: string, schema: z.ZodType<T>, signal?: AbortSignal): Promise<T> {
     return netJson<unknown>(url, {
       purpose: 'Modrinth',
@@ -360,16 +412,29 @@ export interface PlanItem {
   requested: boolean;
 }
 
-interface InstalledIndex { projects: Record<string, { file: string; versionId: string }> }
-const INDEX_FILE = '.chald-modrinth.json';
+export interface InstalledIndex { projects: Record<string, { file: string; versionId: string }> }
+export const INDEX_FILE = '.chald-modrinth.json';
 
-async function readInstalled(gameDir: string): Promise<InstalledIndex> {
+export async function readInstalled(gameDir: string): Promise<InstalledIndex> {
   try {
     const j = await readJson<InstalledIndex>(path.join(gameDir, INDEX_FILE));
     return j && typeof j.projects === 'object' && j.projects ? j : { projects: {} };
   } catch {
     return { projects: {} };
   }
+}
+
+/** Modrinth project ids installed in this game directory (the file must still exist). Dependencies count too. */
+export async function listInstalledProjects(gameDir: string, kind: 'mod' | 'resourcepack'): Promise<string[]> {
+  const dir = path.join(gameDir, kind === 'mod' ? 'mods' : 'resourcepacks');
+  const installed = await readInstalled(gameDir);
+  const out: string[] = [];
+  for (const [projectId, info] of Object.entries(installed.projects)) {
+    if (typeof info?.file !== 'string' || info.file.includes('/') || info.file.includes('\\')) continue;
+    // a disabled mod is renamed to *.disabled, it is still installed
+    if ((await exists(path.join(dir, info.file))) || (await exists(path.join(dir, `${info.file}.disabled`)))) out.push(projectId);
+  }
+  return out;
 }
 
 export interface InstallTarget {

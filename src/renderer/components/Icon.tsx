@@ -20,6 +20,7 @@ const P: Record<string, string> = {
   check: 'M5 12.5l4.5 4.5L19 7.5',
   refresh: 'M20 5v5h-5M4 19v-5h5M5.6 9A8 8 0 0118.4 7L20 10M18.4 15A8 8 0 015.6 17L4 14',
   user: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4 21c0-4 4-6 8-6s8 2 8 6',
+  upload: 'M12 16V5M7 9l5-5 5 5M5 20h14',
   download: 'M12 4v11M7 11l5 5 5-5M5 20h14',
   edit: 'M4 20h4L19 9l-4-4L4 16v4zM13 7l4 4',
   chevron: 'M9 6l6 6-6 6',
@@ -27,6 +28,7 @@ const P: Record<string, string> = {
   globe: 'M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18',
   alert: 'M12 4l9 16H3L12 4zM12 10v5M12 18h.01',
   shield: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z',
+  shirt: 'M8 3L3 6.5l2.2 4L7 9.6V21h10V9.6l1.8.9 2.2-4L16 3c-.4 2-2 3.2-4 3.2S8.4 5 8 3z',
   wrench: 'M14 6a4 4 0 005 5l-9 9a2 2 0 01-3-3l9-9a4 4 0 00-2-2z',
 };
 

@@ -33,7 +33,8 @@ export function loaderText(i: Pick<InstanceView, 'loader'>): string {
 }
 
 export function memoryText(mb: number): string {
-  return mb % 1024 === 0 ? `${mb / 1024} ГБ` : `${mb} МБ`;
+  if (mb < 1024) return `${mb} МБ`;
+  return `${(mb / 1024).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} ГБ`;
 }
 
 export const STATE_TEXT: Record<InstanceView['state'], string> = {

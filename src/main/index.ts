@@ -76,6 +76,9 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 
+  // Тот же идентификатор, что у ярлыков установщика (build.appId в package.json): иначе значок в панели задач не совпадёт с ярлыком.
+  if (process.platform === 'win32') app.setAppUserModelId('studio.chald.launcher');
+
   void app.whenReady().then(async () => {
     session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
     if (!isDev) {

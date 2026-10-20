@@ -1,3 +1,38 @@
-node_modules
-dist
-release
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+dist-electron/
+release/
+out/
+coverage/
+
+# Installers and packaged files
+*.asar
+*.exe
+*.msi
+*.nsis.7z
+*.blockmap
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.swp

@@ -7,6 +7,8 @@ import { AppError } from './errors';
 import { extractNatives, loadResolvedVersion, verifyInstall } from './installer';
 import { detectJava, downloadJava, javaMajor, pickJava } from './java';
 import { buildLaunchCommand, redact, splitArgs } from './launchArgs';
+import { countModJars, systemMemory } from './memory';
+import { memoryWarning, recommendMemory } from '../shared/memory';
 import type { InstanceStore } from './instances';
 import { currentPlatform, resolveLibraries } from './versionJson';
 import { versionPaths } from './versions';
@@ -107,9 +109,19 @@ export class GameManager {
     const width = s.width ?? settings.width;
     const height = s.height ?? settings.height;
     const fullscreen = s.fullscreen ?? settings.fullscreen;
-    const minMb = s.memoryMinMb ?? settings.memoryMinMb;
-    const maxMb = s.memoryMaxMb ?? settings.memoryMaxMb;
-    if (minMb > maxMb) throw new AppError('SETTINGS_INVALID', 'Минимум памяти больше максимума');
+    // Memory: the instance's own value wins; otherwise the automatic pick (computer's RAM + the instance's mods) or the global sliders.
+    const { totalMb } = systemMemory();
+    const auto = settings.memoryAuto && (s.memoryMinMb == null || s.memoryMaxMb == null)
+      ? recommendMemory({ totalMb, modCount: await countModJars(gameDir), loader: meta.loader.type })
+      : null;
+    const baseMin = auto ? auto.minMb : settings.memoryMinMb;
+    const baseMax = auto ? auto.maxMb : settings.memoryMaxMb;
+    const maxMb = s.memoryMaxMb ?? baseMax;
+    let minMb = s.memoryMinMb ?? baseMin;
+    if (minMb > maxMb) {
+      if (s.memoryMinMb != null) throw new AppError('SETTINGS_INVALID', 'Минимум памяти больше максимума');
+      minMb = maxMb; // the minimum came from the global/auto value and the instance lowered the maximum under it
+    }
 
     const cmd = buildLaunchCommand({
       version, platform, javaPath, gameDir, assetsDir: dirs.assets, librariesDir: dirs.libraries, nativesDir,
@@ -124,6 +136,10 @@ export class GameManager {
 
     this.logs.set(id, []);
     this.pushLog(id, `[launcher] ${redact([cmd.command, ...cmd.args].join(' '), cmd.secrets)}`);
+    this.pushLog(id, `[launcher] память: ${minMb}–${maxMb} МБ (${auto ? 'подобрана автоматически' : s.memoryMinMb != null && s.memoryMaxMb != null ? 'свои настройки инстанса' : 'из настроек'}), ОЗУ компьютера: ${totalMb} МБ`);
+    const warn = memoryWarning(maxMb, totalMb);
+    if (warn === 'exceeds-ram') this.pushLog(id, '[launcher] Предупреждение: максимум памяти больше, чем ОЗУ компьютера: игра будет сильно тормозить. Уменьши его в настройках.');
+    else if (warn === 'tight') this.pushLog(id, '[launcher] Предупреждение: системе остаётся меньше 1,5 ГБ ОЗУ, возможны подвисания компьютера.');
 
     const child = spawn(cmd.command, cmd.args, { cwd: cmd.cwd, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
     this.procs.set(id, child);

@@ -52,6 +52,7 @@ const settingsBase = z.object({
   javaPath: z.string().max(1024),
   memoryMinMb: memory,
   memoryMaxMb: memory,
+  memoryAuto: z.boolean(),
   jvmArgs: z.string().max(2000),
   width: dim(320, 7680),
   height: dim(240, 4320),

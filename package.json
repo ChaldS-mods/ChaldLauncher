@@ -13,7 +13,9 @@
     "start": "npm run build && electron .",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "test": "vitest run",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder",
+    "dist:dir": "npm run build && electron-builder --dir --win --x64",
+    "installer": "npm run dist:dir && npm --prefix installer install && npm --prefix installer run dist"
   },
   "dependencies": {
     "@fontsource/rubik": "^5.3.0",
@@ -38,5 +40,29 @@
     "vite": "^8.3.4",
     "vitest": "^5.0.5",
     "wait-on": "^9.5.1"
+  },
+  "build": {
+    "appId": "studio.chald.launcher",
+    "productName": "ChaldLauncher",
+    "directories": {
+      "output": "release",
+      "buildResources": "resources"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "resources/icon.ico"
+    }
   }
 }

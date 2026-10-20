@@ -4,7 +4,7 @@ import type {
 } from '../shared/types';
 import { ApiError, call, errMsg, on } from './api';
 
-export type Page = 'home' | 'instances' | 'versions' | 'mods' | 'resourcepacks' | 'modrinth' | 'console' | 'settings';
+export type Page = 'home' | 'instances' | 'versions' | 'mods' | 'resourcepacks' | 'wardrobe' | 'modrinth' | 'console' | 'settings';
 export interface Toast { id: number; kind: 'ok' | 'error' | 'info'; text: string }
 
 interface State {
@@ -22,6 +22,7 @@ interface State {
   auth: AuthState | null;
   deviceCode: DeviceCodeInfo | null;
   update: UpdateInfo | null;
+  sysMemory: { totalMb: number; freeMb: number } | null;
   toasts: Toast[];
   wizard: { open: boolean; mcVersion: string | null };
 
@@ -43,6 +44,7 @@ interface State {
   setOffline(name: string): Promise<void>;
   setAccountMode(mode: AppSettings['accountMode']): Promise<void>;
   checkUpdate(): Promise<void>;
+  refreshMemory(): Promise<void>;
   selected(): InstanceView | null;
 }
 
@@ -65,6 +67,7 @@ export const useStore = create<State>((set, get) => ({
   deviceCode: null,
   loginWait: null,
   update: null,
+  sysMemory: null,
   toasts: [],
   wizard: { open: false, mcVersion: null },
 
@@ -77,6 +80,7 @@ export const useStore = create<State>((set, get) => ({
       await get().refreshInstances();
       const { instances, selectedId } = get();
       if (!instances.some((i) => i.id === selectedId)) set({ selectedId: instances[0]?.id ?? null });
+      void get().refreshMemory();
       set({ ready: true });
     } catch (e) {
       initialized = false; // allow a retry from the boot screen
@@ -220,6 +224,10 @@ export const useStore = create<State>((set, get) => ({
     } catch {
       set({ update: null });
     }
+  },
+
+  async refreshMemory() {
+    try { set({ sysMemory: await call('system:memory') }); } catch { /* the sliders work without it */ }
   },
 
   selected() {

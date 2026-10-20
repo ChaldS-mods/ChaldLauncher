@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import AdmZip from 'adm-zip';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  buildFacets, extractOverrides, loaderFilter, mrpackIndexSchema, pickVersion, planInstall, planPack, readMrpackIndex, safePackPath,
+  buildFacets, extractOverrides, listInstalledProjects, loaderFilter, mrpackIndexSchema, pickVersion, planInstall, planPack, readMrpackIndex, safePackPath,
   type MrVersion, type ModrinthLike,
 } from '../src/main/modrinth';
 
@@ -192,5 +192,16 @@ describe('planInstall (mods with dependencies)', () => {
     await fs.writeFile(path.join(gameDir(), 'mods', 'a.jar'), 'x');
     await fs.writeFile(path.join(gameDir(), '.chald-modrinth.json'), JSON.stringify({ projects: { MODAAAAA: { file: 'a.jar', versionId: 'v1' } } }));
     await expect(planInstall(stub({}), { gameDir: gameDir(), mcVersion: '1.20.1', loader: 'fabric', kind: 'mod' }, 'MODAAAAA')).rejects.toThrow(/уже установлен/);
+  });
+
+  it('lists installed projects: existing and disabled files count, missing ones do not', async () => {
+    await fs.mkdir(path.join(gameDir(), 'mods'), { recursive: true });
+    await fs.writeFile(path.join(gameDir(), 'mods', 'a.jar'), 'x');
+    await fs.writeFile(path.join(gameDir(), 'mods', 'b.jar.disabled'), 'x');
+    await fs.writeFile(path.join(gameDir(), '.chald-modrinth.json'), JSON.stringify({ projects: {
+      AAAAAAAA: { file: 'a.jar', versionId: 'v1' }, BBBBBBBB: { file: 'b.jar', versionId: 'v2' }, CCCCCCCC: { file: 'gone.jar', versionId: 'v3' }, DDDDDDDD: { file: '../x.jar', versionId: 'v4' },
+    } }));
+    expect((await listInstalledProjects(gameDir(), 'mod')).sort()).toEqual(['AAAAAAAA', 'BBBBBBBB']);
+    expect(await listInstalledProjects(gameDir(), 'resourcepack')).toEqual([]);
   });
 });

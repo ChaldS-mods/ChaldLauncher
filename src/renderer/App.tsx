@@ -12,6 +12,7 @@ import { InstancesPage } from './pages/Instances';
 import { ModrinthPage } from './pages/Modrinth';
 import { SettingsPage } from './pages/Settings';
 import { VersionsPage } from './pages/Versions';
+import { WardrobePage } from './pages/Wardrobe';
 import { useStore, type Page } from './store';
 
 function PageView({ page }: { page: Page }) {
@@ -21,6 +22,7 @@ function PageView({ page }: { page: Page }) {
     case 'versions': return <VersionsPage />;
     case 'mods': return <ContentPage kind="mods" />;
     case 'resourcepacks': return <ContentPage kind="resourcepacks" />;
+    case 'wardrobe': return <WardrobePage />;
     case 'modrinth': return <ModrinthPage />;
     case 'console': return <ConsolePage />;
     case 'settings': return <SettingsPage />;

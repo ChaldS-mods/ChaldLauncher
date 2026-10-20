@@ -2,10 +2,11 @@ import { useState } from 'react';
 import type { InstanceView } from '../../shared/types';
 import { call, errMsg } from '../api';
 import { useStore } from '../store';
+import { ExportDialog } from './ChaldPackDialogs';
 import { EditInstance } from './EditInstance';
 import { Field, ConfirmModal, Modal, type MenuItem } from './ui';
 
-export type InstanceDialog = { kind: 'edit' | 'duplicate' | 'delete'; id: string } | null;
+export type InstanceDialog = { kind: 'edit' | 'duplicate' | 'export' | 'delete'; id: string } | null;
 
 /** Menu entries shared by the card and the side panel. Destructive actions only open a dialog. */
 export function instanceMenuItems(inst: InstanceView, open: (d: InstanceDialog) => void): MenuItem[] {
@@ -14,6 +15,7 @@ export function instanceMenuItems(inst: InstanceView, open: (d: InstanceDialog) 
   return [
     { label: 'Открыть папку', icon: 'folder', onClick: () => void call('instances:openFolder', { id: inst.id }).catch((e) => toast('error', errMsg(e))) },
     { label: 'Дублировать', icon: 'copy', onClick: () => open({ kind: 'duplicate', id: inst.id }), disabled: busy },
+    { label: 'Экспорт в файл', icon: 'upload', onClick: () => open({ kind: 'export', id: inst.id }), disabled: inst.state === 'installing' },
     { label: 'Изменить', icon: 'edit', onClick: () => open({ kind: 'edit', id: inst.id }), disabled: inst.state === 'installing' },
     { label: 'Восстановить', icon: 'wrench', onClick: () => void useStore.getState().install(inst.id), disabled: busy || (!inst.installed && inst.state !== 'broken') },
     { label: 'Удалить', icon: 'trash', onClick: () => open({ kind: 'delete', id: inst.id }), danger: true, disabled: busy },
@@ -79,5 +81,6 @@ export function InstanceDialogs({ dialog, close }: { dialog: InstanceDialog; clo
   if (!dialog || !inst) return null;
   if (dialog.kind === 'edit') return <EditInstance inst={inst} onClose={close} />;
   if (dialog.kind === 'duplicate') return <DuplicateDialog inst={inst} onClose={close} />;
+  if (dialog.kind === 'export') return <ExportDialog inst={inst} onClose={close} />;
   return <DeleteDialog inst={inst} onClose={close} />;
 }

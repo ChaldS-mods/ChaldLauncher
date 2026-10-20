@@ -1,3 +1,5 @@
+import type { SkinVariant } from './skin';
+
 export type LoaderType = 'vanilla' | 'fabric' | 'quilt' | 'forge' | 'neoforge';
 export type InstanceKind = 'official' | 'modded' | 'custom';
 export type AccountMode = 'microsoft' | 'offline';
@@ -57,6 +59,8 @@ export interface AppSettings {
   javaPath: string;
   memoryMinMb: number;
   memoryMaxMb: number;
+  /** true: the launcher picks the heap itself (computer's RAM + instance's mods), memoryMinMb/MaxMb are used only when it is off */
+  memoryAuto: boolean;
   jvmArgs: string;
   width: number;
   height: number;
@@ -243,4 +247,78 @@ export interface ModrinthSearchResult {
   hits: ModrinthHit[];
   total: number;
   offset: number;
+}
+
+export interface SkinEntry {
+  id: string;
+  name: string;
+  variant: SkinVariant;
+  addedAt: string;
+  /** PNG of the skin; skins are tiny (a few KB) */
+  dataUrl: string;
+}
+
+/** The skin currently worn by the Microsoft account. */
+export interface AccountSkin {
+  variant: SkinVariant;
+  dataUrl: string;
+}
+
+export interface SkinImportResult {
+  added: SkinEntry[];
+  /** one line per file that was not added (wrong size, not a PNG, already in the wardrobe, ...) */
+  problems: string[];
+}
+
+export interface ChaldPackSummary {
+  name: string;
+  description: string;
+  mcVersion: string;
+  loader: { type: LoaderType; version: string | null };
+  /** files that will be downloaded from Modrinth */
+  downloads: number;
+  /** files taken from the archive itself */
+  overrideFiles: number;
+  overrideBytes: number;
+}
+
+export interface ChaldPackExportResult {
+  downloads: number;
+  bundledFiles: number;
+  bundledBytes: number;
+  /** files that had to be packed instead of listed, with the reason */
+  notices: string[];
+}
+
+export interface ModUpdateInfo {
+  versionId: string;
+  versionNumber: string;
+  name: string;
+  type: 'release' | 'beta' | 'alpha';
+  published: string;
+  fileName: string;
+  size: number;
+  changelog: string;
+  requiredDeps: number;
+}
+
+export interface InstalledMod {
+  file: string;
+  name: string;
+  version: string | null;
+  enabled: boolean;
+  size: number;
+  /** Modrinth project, recognised by the file hash; null = not on Modrinth (or not checked) */
+  projectId: string | null;
+  slug: string | null;
+  iconDataUrl: string | null;
+  source: 'modrinth' | 'unknown';
+  update: ModUpdateInfo | null;
+}
+
+export interface InstalledModsReport {
+  mods: InstalledMod[];
+  checkedAt: string;
+  /** set when Modrinth could not be reached: the local list is still complete */
+  error: string | null;
 }

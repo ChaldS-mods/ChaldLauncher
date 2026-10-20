@@ -45,7 +45,9 @@ export function ModrinthPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [open, setOpen] = useState<ModrinthHit | null>(null);
+  const [installed, setInstalled] = useState<Set<string>>(new Set());
   const seq = useRef(0);
+  const instKind = type === 'mod' || type === 'resourcepack' ? type : null;
 
   useEffect(() => {
     const t = setTimeout(() => setQuery(text.trim()), 350);
@@ -77,6 +79,12 @@ export function ModrinthPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { setHits(null); void search(0); }, [search, instId]);
 
+  const loadInstalled = useCallback(async () => {
+    if (!instId || !instKind) { setInstalled(new Set()); return; }
+    try { setInstalled(new Set(await call('modrinth:installed', { id: instId, kind: instKind }))); } catch { setInstalled(new Set()); }
+  }, [instId, instKind]);
+  useEffect(() => { void loadInstalled(); }, [loadInstalled]);
+
   const setType = (t: ModrinthType) => useStore.setState({ modrinthType: t });
 
   const install = async (h: ModrinthHit) => {
@@ -89,6 +97,7 @@ export function ModrinthPage() {
         const files = await call('modrinth:install', { id: inst.id, projectId: h.id, kind: h.type });
         toast('ok', files.length > 1 ? `Установлено: ${h.title} и зависимости (${files.length} файла)` : `Установлено: ${h.title}`);
         void refreshInstances();
+        void loadInstalled();
       }
     } catch (e) {
       toast('error', errMsg(e));
@@ -104,7 +113,7 @@ export function ModrinthPage() {
   const t = TYPES.find((x) => x.id === type)!;
 
   if (open) {
-    return <ModrinthProject hit={open} inst={inst} locked={locked} vanillaMods={vanillaMods} filterMc={isPack ? null : (inst?.mcVersion ?? null)} filterLoader={type === 'mod' && inst && inst.loader.type !== 'vanilla' ? inst.loader.type : null} onBack={() => setOpen(null)} />;
+    return <ModrinthProject hit={open} inst={inst} locked={locked} vanillaMods={vanillaMods} filterMc={isPack ? null : (inst?.mcVersion ?? null)} filterLoader={type === 'mod' && inst && inst.loader.type !== 'vanilla' ? inst.loader.type : null} installed={installed.has(open.id)} onChanged={() => void loadInstalled()} onBack={() => setOpen(null)} />;
   }
 
   return (
@@ -155,7 +164,8 @@ export function ModrinthPage() {
               const packOp = ops[`modpack:${h.id}`];
               const packRunning = packOp?.status === 'running';
               const working = busy.has(h.id) || packRunning;
-              const disabled = working || (h.type !== 'modpack' && (!inst || locked || vanillaMods));
+              const isInstalled = h.type !== 'modpack' && installed.has(h.id);
+              const disabled = working || isInstalled || (h.type !== 'modpack' && (!inst || locked || vanillaMods));
               return (
                 <li key={h.id} className="crow mr-row">
                   {h.iconDataUrl ? <img className="crow__icon" src={h.iconDataUrl} alt="" /> : <span className="crow__icon crow__icon--ph"><Icon name={t.icon} size={22} /></span>}
@@ -170,8 +180,8 @@ export function ModrinthPage() {
                   </div>
                   {packRunning && <button className="btn btn--sm" onClick={() => cancelPack(h.id)}>Отмена</button>}
                   <button className="btn" onClick={() => setOpen(h)}>Подробнее</button>
-                  <button className="btn btn--primary" disabled={disabled} onClick={() => void install(h)}>
-                    {working ? 'Установка…' : h.type === 'modpack' ? 'Установить сборку' : 'Установить'}
+                  <button className={`btn${isInstalled ? ' btn--done' : ' btn--primary'}`} disabled={disabled} onClick={() => void install(h)}>
+                    {working ? 'Установка…' : isInstalled ? 'Установлено' : h.type === 'modpack' ? 'Установить сборку' : 'Установить'}
                   </button>
                 </li>
               );

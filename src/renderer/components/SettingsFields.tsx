@@ -1,4 +1,8 @@
-import type { InstanceSettings } from '../../shared/types';
+import type { InstanceSettings, LoaderType } from '../../shared/types';
+import { recommendMemory } from '../../shared/memory';
+import { useStore } from '../store';
+import { MemorySliders } from './MemorySliders';
+import { memoryText } from '../util';
 import { instanceSettingsSchema } from '../../shared/schemas';
 import { numOrNull } from '../util';
 import { Field } from './ui';
@@ -28,16 +32,36 @@ export function parseDraft(d: SettingsDraft): { ok: true; value: InstanceSetting
 }
 
 /** Empty field = use the global value from Settings. */
-export function SettingsFields({ draft, onChange }: { draft: SettingsDraft; onChange: (d: SettingsDraft) => void }) {
+export function SettingsFields({ draft, onChange, memory }: { draft: SettingsDraft; onChange: (d: SettingsDraft) => void; memory?: { modCount: number; loader: LoaderType } }) {
   const set = <K extends keyof SettingsDraft>(k: K, v: SettingsDraft[K]) => onChange({ ...draft, [k]: v });
+  const settings = useStore((s) => s.settings);
+  const sys = useStore((s) => s.sysMemory);
+  const advice = sys ? recommendMemory({ totalMb: sys.totalMb, modCount: memory?.modCount ?? 0, loader: memory?.loader ?? 'vanilla' }) : null;
+  const own = draft.min !== '' || draft.max !== '';
+  const globalText = !settings ? '—' : settings.memoryAuto ? (advice ? `автоматически: ${memoryText(advice.minMb)} – ${memoryText(advice.maxMb)}` : 'автоматически') : `${memoryText(settings.memoryMinMb)} – ${memoryText(settings.memoryMaxMb)}`;
+  const startOwn = () => {
+    const from = advice && settings?.memoryAuto ? advice : settings ? { minMb: settings.memoryMinMb, maxMb: settings.memoryMaxMb } : { minMb: 1024, maxMb: 4096 };
+    onChange({ ...draft, min: String(from.minMb), max: String(from.maxMb) });
+  };
   return (
     <div className="form-grid">
-      <Field label="Память, минимум (МБ)" hint="Пусто — как в настройках">
-        <input className="input" inputMode="numeric" value={draft.min} onChange={(e) => set('min', e.target.value)} placeholder="1024" />
-      </Field>
-      <Field label="Память, максимум (МБ)" hint="Пусто — как в настройках">
-        <input className="input" inputMode="numeric" value={draft.max} onChange={(e) => set('max', e.target.value)} placeholder="4096" />
-      </Field>
+      <div className="form-grid__wide">
+        <Field label="Память" hint={own ? 'Значения только для этого инстанса' : `Как в настройках: ${globalText}`}>
+          <div className="segmented" role="radiogroup" aria-label="Память инстанса">
+            <button type="button" role="radio" aria-checked={!own} className={!own ? 'is-on' : ''} onClick={() => onChange({ ...draft, min: '', max: '' })}>Как в настройках</button>
+            <button type="button" role="radio" aria-checked={own} className={own ? 'is-on' : ''} onClick={() => !own && startOwn()}>Свой объём</button>
+          </div>
+        </Field>
+        {own && (
+          <MemorySliders
+            minMb={Number(draft.min) || advice?.minMb || 1024}
+            maxMb={Number(draft.max) || advice?.maxMb || 4096}
+            onChange={(a, b) => onChange({ ...draft, min: String(a), max: String(b) })}
+            sys={sys}
+            advice={advice}
+          />
+        )}
+      </div>
       <Field label="Ширина окна" hint="Пусто — как в настройках">
         <input className="input" inputMode="numeric" value={draft.width} onChange={(e) => set('width', e.target.value)} placeholder="1280" />
       </Field>

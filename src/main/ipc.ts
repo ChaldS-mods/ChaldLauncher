@@ -8,7 +8,8 @@ import {
 import { importContent, listContent, removeContent, toggleContent } from './content';
 import { AppError } from './errors';
 import { detectJava } from './java';
-import { loaderFilter } from './modrinth';
+import { systemMemory } from './memory';
+import { listInstalledProjects, loaderFilter } from './modrinth';
 import { allowedHosts, clearNetLog, getNetLog } from './net';
 import { checkUpdate } from './update';
 import type { Services } from './services';
@@ -175,13 +176,63 @@ export function registerIpc(s: Services, trustedOrigins: string[]): void {
     }).parse(arg);
     return s.installFromModrinth(id, projectId, kind, versionId ?? null);
   });
+  handle('modrinth:installed', async (arg) => {
+    const { id, kind } = z.object({ id: instanceIdSchema, kind: z.enum(['mod', 'resourcepack']) }).parse(arg);
+    return listInstalledProjects((await gameDirOf(id)).gameDir, kind);
+  });
+  handle('chaldpack:inspect', async (_arg, e) => {
+    const w = winOf(e);
+    const opts = { title: 'Импорт инстанса', properties: ['openFile'] as 'openFile'[], filters: [{ name: 'Инстанс ChaldLauncher', extensions: ['chaldlauncher'] }] };
+    const r = w ? await dialog.showOpenDialog(w, opts) : await dialog.showOpenDialog(opts);
+    if (r.canceled || !r.filePaths[0]) return null;
+    return s.inspectChaldPack(r.filePaths[0]);
+  });
+  handle('chaldpack:import', (arg) => s.startChaldPack(z.object({ token: z.string().regex(/^[a-f0-9]{16}$/) }).parse(arg).token));
+  handle('chaldpack:export', async (arg, e) => {
+    const { id, includeWorlds } = z.object({ id: instanceIdSchema, includeWorlds: z.boolean() }).parse(arg);
+    const meta = await s.instances.readMeta(id);
+    const w = winOf(e);
+    const opts = { title: 'Экспорт инстанса', defaultPath: `${meta.name.replace(/[\\/:*?"<>|]+/g, '_').trim() || 'instance'}.chaldlauncher`, filters: [{ name: 'Инстанс ChaldLauncher', extensions: ['chaldlauncher'] }] };
+    const r = w ? await dialog.showSaveDialog(w, opts) : await dialog.showSaveDialog(opts);
+    if (r.canceled || !r.filePath) return null;
+    const file = r.filePath.toLowerCase().endsWith('.chaldlauncher') ? r.filePath : `${r.filePath}.chaldlauncher`;
+    return { ...(await s.exportChaldPack(id, file, includeWorlds)), file };
+  });
   handle('modrinth:installPack', (arg) => {
     const { projectId, versionId } = z.object({ projectId: modrinthIdSchema, versionId: modrinthIdSchema.nullish() }).parse(arg);
     return s.startModpack(projectId, versionId ?? null);
   });
   handle('modrinth:cancelPack', (arg) => s.cancelModpack(z.object({ projectId: modrinthIdSchema }).parse(arg).projectId));
 
+  const skinId = z.string().regex(/^[a-f0-9]{12}$/, 'Некорректный идентификатор скина');
+  const skinName = z.string().trim().min(1, 'Введи название скина').max(32, 'Не длиннее 32 символов');
+  handle('wardrobe:list', () => s.wardrobe.list());
+  handle('wardrobe:import', async (_arg, e) => {
+    const w = winOf(e);
+    const opts = { title: 'Добавить скины', properties: ['openFile', 'multiSelections'] as ('openFile' | 'multiSelections')[], filters: [{ name: 'Скины (PNG)', extensions: ['png'] }] };
+    const r = w ? await dialog.showOpenDialog(w, opts) : await dialog.showOpenDialog(opts);
+    if (r.canceled) return { added: [], problems: [] };
+    return s.wardrobe.importFiles(r.filePaths);
+  });
+  handle('wardrobe:update', (arg) => {
+    const { id, patch } = z.object({ id: skinId, patch: z.object({ name: skinName.optional(), variant: z.enum(['classic', 'slim']).optional() }) }).parse(arg);
+    return s.wardrobe.update(id, patch);
+  });
+  handle('wardrobe:remove', async (arg) => {
+    const { id } = z.object({ id: skinId, confirm: z.literal(true) }).parse(arg);
+    await s.wardrobe.remove(id);
+  });
+  handle('wardrobe:current', () => s.wardrobe.current());
+  handle('wardrobe:saveCurrent', async (arg) => {
+    const { name } = z.object({ name: skinName }).parse(arg);
+    const { entry, duplicate } = await s.wardrobe.saveCurrent(name);
+    return duplicate ? { added: [], problems: [`Такой скин уже есть в гардеробе («${entry.name}»)`] } : { added: [entry], problems: [] };
+  });
+  handle('wardrobe:apply', (arg) => s.wardrobe.apply(z.object({ id: skinId }).parse(arg).id));
+  handle('wardrobe:reset', () => s.wardrobe.reset());
+
   handle('java:detect', () => detectJava(s.dirs));
+  handle('system:memory', () => systemMemory());
 
   handle('auth:state', () => s.auth.state());
   handle('auth:login', (arg) => s.auth.login(z.object({ method: z.enum(['browser', 'code']).default('browser') }).parse(arg ?? {}).method));
