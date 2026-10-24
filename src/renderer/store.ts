@@ -139,6 +139,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   go(page, opts) {
+    void call('presence:page', page).catch(() => undefined);
     set({ page, ...(opts?.consoleTab ? { consoleTab: opts.consoleTab } : {}), ...(opts?.modrinthType ? { modrinthType: opts.modrinthType } : {}) });
   },
 

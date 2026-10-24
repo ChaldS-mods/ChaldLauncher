@@ -3,7 +3,8 @@ import type { AppSettings, AuthState, DeviceCodeInfo, GameLogEvent, GameStatusEv
 import type { IpcEvents } from '../shared/ipc';
 import { AuthService, type SecretBox } from './auth';
 import { sharedDirs, type SharedDirs } from './dirs';
-import { DEFAULT_MS_CLIENT_ID } from './config';
+import { DEFAULT_DISCORD_CLIENT_ID, DEFAULT_MS_CLIENT_ID, DEFAULT_UPDATE_REPO } from './config';
+import { PresenceService } from './presence';
 import { AppError, isAbort } from './errors';
 import { GameManager } from './launcher';
 import { InstanceStore, type InstanceCtx } from './instances';
@@ -36,6 +37,7 @@ export class Services {
   readonly auth: AuthService;
   readonly games: GameManager;
   readonly wardrobe: WardrobeService;
+  readonly presence: PresenceService;
   readonly installs = new Map<string, AbortController>();
   readonly packs = new Map<string, AbortController>();
   readonly modrinth: ModrinthApi;
@@ -74,6 +76,12 @@ export class Services {
         return (await this.auth.getLaunchAuth()).accessToken;
       },
     });
+    this.presence = new PresenceService({
+      appVersion: o.appVersion,
+      clientId: DEFAULT_DISCORD_CLIENT_ID,
+      downloadUrl: `https://github.com/${DEFAULT_UPDATE_REPO}/releases/latest`,
+      pid: process.pid,
+    });
     this.games = new GameManager({
       dirs: this.dirs,
       instances: this.instances,
@@ -81,13 +89,34 @@ export class Services {
       getSettings: () => this.settings.get(),
       launcherVersion: o.appVersion,
       onProgress: (p: OpProgress) => o.emit('op:progress', p),
-      onStatus: (e: GameStatusEvent) => o.emit('game:status', e),
+      onStatus: (e: GameStatusEvent) => {
+        o.emit('game:status', e);
+        this.trackPresence(e);
+      },
       onLog: (e: GameLogEvent) => o.emit('game:log', e),
     });
   }
 
   async init(): Promise<void> {
-    this.closeBehavior = (await this.settings.get()).closeBehavior;
+    const s = await this.settings.get();
+    this.closeBehavior = s.closeBehavior;
+    this.presence.configure(s.discordRpc, s.discordShowInstance);
+  }
+
+  /** Mirrors a started/stopped game to the Discord status. Never throws: the status is a nicety. */
+  private trackPresence(e: GameStatusEvent): void {
+    if (e.status !== 'running') {
+      this.presence.gameStopped(e.instanceId);
+      return;
+    }
+    void this.instances
+      .readMeta(e.instanceId)
+      .then((meta) => {
+        // the game may already be gone by the time the file is read
+        if (!this.games.activeIds().has(e.instanceId)) return;
+        this.presence.gameStarted({ id: e.instanceId, name: meta.name, mcVersion: meta.mcVersion, loader: meta.loader.type, since: Date.now() });
+      })
+      .catch(() => undefined);
   }
 
   async instancesRoot(): Promise<string> {

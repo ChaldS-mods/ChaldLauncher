@@ -106,6 +106,11 @@ if (!app.requestSingleInstanceLock()) {
     });
   });
 
+  // clear the Discord status right away instead of leaving it hanging
+  app.on('will-quit', () => {
+    if (services) services.presence.dispose();
+  });
+
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
   });

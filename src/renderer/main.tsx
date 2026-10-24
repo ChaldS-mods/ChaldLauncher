@@ -12,14 +12,28 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { configureSound, installClickSounds } from './sound';
 import { useStore } from './store';
+import { applyCachedTheme, applyTheme, cacheTheme, themeFromSettings } from './theme';
 
+applyCachedTheme();
 installClickSounds();
 const applySound = () => {
   const s = useStore.getState().settings;
   configureSound({ enabled: s?.uiSounds ?? true, volume: s?.soundVolume ?? 50 });
 };
-applySound();
-useStore.subscribe(applySound);
+let themeKey = '';
+const applySavedTheme = () => {
+  const s = useStore.getState().settings;
+  if (!s) return;
+  const colors = themeFromSettings(s);
+  const key = JSON.stringify(colors);
+  if (key === themeKey) return;
+  themeKey = key;
+  applyTheme(colors);
+  cacheTheme(colors);
+};
+const applyAll = () => { applySound(); applySavedTheme(); };
+applyAll();
+useStore.subscribe(applyAll);
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

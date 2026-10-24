@@ -68,3 +68,33 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ github.event.release.tag_name }}" release/*.AppImage release/*.tar.gz --clobber
+
+  # После загрузки файлов в релиз: вписать версию и ссылки в docs/index.html и закоммитить в основную ветку.
+  site:
+    needs: [windows, linux]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Update site data
+        run: |
+          gh release view "$TAG" --repo "${{ github.repository }}" --json tagName,publishedAt,url,assets > release.json
+          python3 .github/scripts/update-site.py release.json docs/index.html
+          rm release.json
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/index.html
+          if git diff --cached --quiet; then
+            echo "Без изменений"
+          else
+            git commit -m "site: $TAG"
+            git pull --rebase
+            git push
+          fi

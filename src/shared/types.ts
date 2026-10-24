@@ -75,6 +75,15 @@ export interface AppSettings {
   uiSounds: boolean;
   /** 0..100 */
   soundVolume: number;
+  /** show what the user does in the launcher as a Discord status (Rich Presence) */
+  discordRpc: boolean;
+  /** put the name of the running instance in the Discord status */
+  discordShowInstance: boolean;
+  /** interface colors, #rrggbb (see shared/theme.ts) */
+  themeBg: string;
+  themeAccent: string;
+  themeSecondary: string;
+  themeHighlight: string;
   msClientId: string;
   accountMode: AccountMode;
   offlineName: string;

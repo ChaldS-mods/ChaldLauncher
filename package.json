@@ -1,7 +1,7 @@
 {
   "name": "chald-launcher",
   "productName": "ChaldLauncher",
-  "version": "0.2.0-beta",
+  "version": "0.2.0",
   "description": "Minecraft Launcher by Chald Studio",
   "author": "Chald Studio",
   "license": "UNLICENSED",

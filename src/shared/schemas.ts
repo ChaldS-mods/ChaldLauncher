@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { PRESENCE_PAGES } from './presence';
+
+export const presencePageSchema = z.enum(PRESENCE_PAGES);
 
 export const offlineNameSchema = z.string().regex(/^[A-Za-z0-9_]{3,16}$/, 'Ник: 3–16 символов, только A-Z, a-z, 0-9 и «_»');
 
@@ -46,6 +49,8 @@ export const updateInstanceSchema = z.object({
 });
 export type UpdateInstanceInput = z.infer<typeof updateInstanceSchema>;
 
+const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Цвет: формат #rrggbb');
+
 const settingsBase = z.object({
   instancesDir: z.string().max(1024),
   downloadsDir: z.string().max(1024),
@@ -62,6 +67,12 @@ const settingsBase = z.object({
   autoDownloadUpdates: z.boolean(),
   uiSounds: z.boolean(),
   soundVolume: z.number().int().min(0).max(100),
+  discordRpc: z.boolean(),
+  discordShowInstance: z.boolean(),
+  themeBg: hexColor,
+  themeAccent: hexColor,
+  themeSecondary: hexColor,
+  themeHighlight: hexColor,
   updateRepo: z.string().regex(/^$|^[\w.-]+\/[\w.-]+$/, 'Формат: владелец/репозиторий'),
   msClientId: z.string().regex(/^$|^[0-9a-fA-F-]{36}$/, 'Client ID — UUID из Azure'),
   accountMode: z.enum(['microsoft', 'offline']),

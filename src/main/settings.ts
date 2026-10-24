@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import type { AppSettings } from '../shared/types';
+import { DEFAULT_THEME } from '../shared/theme';
 import { appSettingsPatchSchema, appSettingsSchema } from '../shared/schemas';
 import { AppError } from './errors';
 import { readJson, writeJsonAtomic } from './storage';
@@ -21,6 +22,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   updateRepo: '',
   uiSounds: true,
   soundVolume: 50,
+  discordRpc: true,
+  discordShowInstance: true,
+  themeBg: DEFAULT_THEME.bg,
+  themeAccent: DEFAULT_THEME.accent,
+  themeSecondary: DEFAULT_THEME.secondary,
+  themeHighlight: DEFAULT_THEME.highlight,
   msClientId: '',
   accountMode: 'microsoft',
   offlineName: '',

@@ -4,7 +4,7 @@ import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, type IpcMainIn
 import { z } from 'zod';
 import type { IpcContract, IpcResult } from '../shared/ipc';
 import {
-  appSettingsPatchSchema, createInstanceSchema, fileNameSchema, instanceIdSchema, modrinthIdSchema, modrinthSearchSchema, modrinthVersionsSchema, offlineNameSchema,
+  appSettingsPatchSchema, createInstanceSchema, presencePageSchema, fileNameSchema, instanceIdSchema, modrinthIdSchema, modrinthSearchSchema, modrinthVersionsSchema, offlineNameSchema,
   updateInstanceSchema,
 } from '../shared/schemas';
 import { importContent, listContent, removeContent, toggleContent } from './content';
@@ -77,8 +77,12 @@ export function registerIpc(s: Services, trustedOrigins: string[]): void {
     const patch = appSettingsPatchSchema.parse(arg);
     const next = await s.settings.set(patch);
     s.closeBehavior = next.closeBehavior;
+    s.presence.configure(next.discordRpc, next.discordShowInstance);
     await s.auth.refresh();
     return next;
+  });
+  handle('presence:page', (arg) => {
+    s.presence.setPage(presencePageSchema.parse(arg));
   });
   handle('dialog:pickDirectory', async (arg, e) => {
     const { title } = z.object({ title: z.string().max(100) }).parse(arg);

@@ -3,6 +3,7 @@ import type {
   LoaderType, LoaderVersionEntry, McVersionEntry, ModrinthProjectInfo, ModrinthSearchInput, ModrinthSearchResult, ModrinthType, ModrinthVersionInfo, ModrinthVersionsInput, NetEntry, OpProgress, SkinEntry, SkinImportResult, UpdateInfo, DeviceCodeInfo,
 } from './types';
 import type { SkinVariant } from './skin';
+import type { PresencePage } from './presence';
 import type { CreateInstanceInput, UpdateInstanceInput } from './schemas';
 
 type Ch<Req, Res> = { req: Req; res: Res };
@@ -13,6 +14,8 @@ export interface IpcContract {
   'settings:get': Ch<void, AppSettings>;
   'settings:set': Ch<Partial<AppSettings>, AppSettings>;
   'dialog:pickDirectory': Ch<{ title: string }, string | null>;
+  /** the page the user is on now (for the Discord status) */
+  'presence:page': Ch<PresencePage, void>;
 
   'instances:list': Ch<void, InstanceView[]>;
   'instances:create': Ch<CreateInstanceInput, InstanceView>;
