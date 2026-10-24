@@ -79,6 +79,10 @@ export interface IpcContract {
   'net:allowedHosts': Ch<void, string[]>;
 
   'update:check': Ch<void, UpdateInfo>;
+  /** starts the download of the found update in the background (progress: op:progress, opId update:<version>) */
+  'update:download': Ch<void, void>;
+  /** runs the downloaded installer and closes the launcher */
+  'update:install': Ch<void, void>;
 }
 
 export interface IpcEvents {

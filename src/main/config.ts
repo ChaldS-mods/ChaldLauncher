@@ -6,3 +6,6 @@
  * launchers and the launcher would be impersonating it.
  */
 export const DEFAULT_MS_CLIENT_ID = '46389f46-f373-4e73-8293-3e7e8932857a';
+
+/** Repository whose GitHub Releases carry new launcher versions (used when the "Репозиторий" setting is empty). */
+export const DEFAULT_UPDATE_REPO = 'ChaldS-mods/ChaldLauncher';

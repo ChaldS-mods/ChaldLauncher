@@ -67,7 +67,14 @@ export interface AppSettings {
   fullscreen: boolean;
   closeBehavior: 'quit' | 'minimize-while-playing';
   checkUpdates: boolean;
+  /** download a found update in the background (the install still needs a click) */
+  autoDownloadUpdates: boolean;
+  /** empty: the launcher's own repository (DEFAULT_UPDATE_REPO) */
   updateRepo: string;
+  /** short sounds when buttons are pressed */
+  uiSounds: boolean;
+  /** 0..100 */
+  soundVolume: number;
   msClientId: string;
   accountMode: AccountMode;
   offlineName: string;
@@ -109,7 +116,7 @@ export interface ContentEntry {
   warning: string | null;
 }
 
-export type OpKind = 'install' | 'java' | 'launch' | 'modpack';
+export type OpKind = 'install' | 'java' | 'launch' | 'modpack' | 'update';
 export interface OpProgress {
   opId: string;
   kind: OpKind;
@@ -172,6 +179,11 @@ export interface UpdateInfo {
   latest: string | null;
   url: string | null;
   hasUpdate: boolean;
+  /** installer file of the new version (Windows .exe); null: nothing to download for this platform */
+  assetName: string | null;
+  /** the installer is downloaded and verified, ready to run */
+  downloaded: boolean;
+  downloading: boolean;
 }
 
 export type ModrinthType = 'mod' | 'modpack' | 'resourcepack';

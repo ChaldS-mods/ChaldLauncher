@@ -114,6 +114,9 @@ input, select, textarea { font: inherit; color: inherit; }
   background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--r-md); text-align: left; color: var(--cyan);
 }
 .update:hover { border-color: var(--border); }
+.update--ready { border-color: var(--ok); box-shadow: 0 0 12px rgba(61, 220, 151, 0.25); }
+.update--ready small { color: var(--ok); }
+.update small { overflow-wrap: anywhere; }
 .update span { display: flex; flex-direction: column; min-width: 0; }
 .update strong { color: var(--text); font-weight: 500; font-size: 15px; }
 .update small { color: var(--text-dim); font-size: 15px; }
@@ -210,12 +213,13 @@ select.input option { background: var(--surface); }
 .menu__list .is-danger { color: var(--danger); }
 
 /* ---------- modal ---------- */
-.overlay { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: var(--s-6); background: rgba(1, 7, 14, 0.78); backdrop-filter: blur(3px); animation: fade var(--t-med); }
-.modal { width: min(520px, 100%); max-height: 100%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow), var(--glow); animation: pop var(--t-med); }
+.overlay { position: fixed; inset: 0; z-index: 50; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); place-items: center; padding: var(--s-6); background: rgba(1, 7, 14, 0.78); backdrop-filter: blur(3px); animation: fade var(--t-med); }
+.modal { width: min(520px, 100%); max-height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow), var(--glow); animation: pop var(--t-med); }
 .modal--wide { width: min(760px, 100%); }
+.modal__head, .modal__foot { flex: none; }
 .modal__head { display: flex; align-items: center; justify-content: space-between; padding: var(--s-4) var(--s-5); border-bottom: 1px solid var(--border-soft); }
 .modal__head h2 { font-size: 22px; }
-.modal__body { padding: var(--s-5); overflow: auto; }
+.modal__body { padding: var(--s-5); overflow: auto; min-height: 0; flex: 1 1 auto; }
 .modal__foot { display: flex; justify-content: flex-end; gap: var(--s-3); padding: var(--s-4) var(--s-5); border-top: 1px solid var(--border-soft); }
 @keyframes fade { from { opacity: 0; } }
 @keyframes pop { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
@@ -241,3 +245,13 @@ select.input option { background: var(--surface); }
 .boot { height: 100%; display: grid; place-items: center; background: var(--bg); }
 .boot__inner { display: flex; flex-direction: column; align-items: center; gap: var(--s-4); width: 260px; text-align: center; }
 .boot__error { color: var(--danger); max-width: 420px; }
+
+/* short windows: the dialog keeps its header and the «Назад/Далее» footer visible, only the body scrolls */
+@media (max-height: 720px) {
+  .overlay { padding: var(--s-3); }
+  .modal__head { padding: var(--s-2) var(--s-4); }
+  .modal__head h2 { font-size: 20px; }
+  .modal__body { padding: var(--s-3) var(--s-4); }
+  .modal__foot { padding: var(--s-2) var(--s-4); }
+  .steps { margin-bottom: var(--s-3); }
+}

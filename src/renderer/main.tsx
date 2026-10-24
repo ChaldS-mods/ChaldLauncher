@@ -10,6 +10,16 @@ import './pages.css';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+import { configureSound, installClickSounds } from './sound';
+import { useStore } from './store';
+
+installClickSounds();
+const applySound = () => {
+  const s = useStore.getState().settings;
+  configureSound({ enabled: s?.uiSounds ?? true, volume: s?.soundVolume ?? 50 });
+};
+applySound();
+useStore.subscribe(applySound);
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

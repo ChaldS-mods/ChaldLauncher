@@ -1,3 +1,4 @@
+import type { UpdateInfo } from '../../shared/types';
 import { call } from '../api';
 import { activeOp, useStore, type Page } from '../store';
 import { STATE_TEXT } from '../util';
@@ -47,12 +48,31 @@ const NAV: { page: Page; label: string; icon: string }[] = [
   { page: 'settings', label: 'Настройки', icon: 'gear' },
 ];
 
+/** What the update button says and does, depending on how far the update has come. */
+export function updateButton(u: UpdateInfo | null): { text: string; icon: string; action: 'check' | 'download' | 'install' | 'none' } {
+  if (!u) return { text: 'Проверить обновления', icon: 'refresh', action: 'check' };
+  if (!u.configured) return { text: 'Источник обновлений не задан', icon: 'refresh', action: 'check' };
+  if (!u.hasUpdate) return { text: 'Установлена последняя версия', icon: 'refresh', action: 'check' };
+  if (u.downloaded) return { text: `Установить v${u.latest} и перезапустить`, icon: 'download', action: 'install' };
+  if (u.downloading) return { text: `Скачиваю v${u.latest}…`, icon: 'download', action: 'none' };
+  if (u.assetName) return { text: `Скачать v${u.latest}`, icon: 'download', action: 'download' };
+  return { text: `Доступна v${u.latest}: скачай со страницы релиза на GitHub`, icon: 'download', action: 'check' };
+}
+
 export function Sidebar() {
   const page = useStore((s) => s.page);
   const go = useStore((s) => s.go);
   const info = useStore((s) => s.info);
   const update = useStore((s) => s.update);
   const checkUpdate = useStore((s) => s.checkUpdate);
+  const downloadUpdate = useStore((s) => s.downloadUpdate);
+  const installUpdate = useStore((s) => s.installUpdate);
+  const ub = updateButton(update);
+  const onUpdate = () => {
+    if (ub.action === 'install') void installUpdate();
+    else if (ub.action === 'download') void downloadUpdate();
+    else if (ub.action === 'check') void checkUpdate();
+  };
   return (
     <aside className="sidebar">
       <nav>
@@ -63,13 +83,11 @@ export function Sidebar() {
         ))}
       </nav>
       <div className="sidebar__bottom">
-        <button className="update" onClick={() => void checkUpdate()}>
-          <Icon name="refresh" size={20} />
+        <button className={`update${update?.downloaded ? ' update--ready' : ''}`} onClick={onUpdate} disabled={ub.action === 'none'}>
+          <Icon name={ub.icon} size={20} />
           <span>
             <strong>ChaldLauncher v{info?.version ?? '…'}</strong>
-            <small>
-              {!update ? 'Проверить обновления' : !update.configured ? 'Источник обновлений не задан' : update.hasUpdate ? `Доступна v${update.latest}` : 'Установлена последняя версия'}
-            </small>
+            <small>{ub.text}</small>
           </span>
         </button>
         <div className="studio"><strong>Chald Studio</strong><small>Создаём лучше</small></div>

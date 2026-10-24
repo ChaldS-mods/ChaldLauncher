@@ -1,3 +1,5 @@
+import { spawn } from 'node:child_process';
+import * as path from 'node:path';
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, type IpcMainInvokeEvent } from 'electron';
 import { z } from 'zod';
 import type { IpcContract, IpcResult } from '../shared/ipc';
@@ -11,7 +13,8 @@ import { detectJava } from './java';
 import { systemMemory } from './memory';
 import { listInstalledProjects, loaderFilter } from './modrinth';
 import { allowedHosts, clearNetLog, getNetLog } from './net';
-import { checkUpdate } from './update';
+import { DEFAULT_UPDATE_REPO } from './config';
+import { Updater } from './updater';
 import type { Services } from './services';
 import { loaderVersions } from './versions';
 
@@ -248,5 +251,22 @@ export function registerIpc(s: Services, trustedOrigins: string[]): void {
   handle('net:clear', () => clearNetLog());
   handle('net:allowedHosts', () => allowedHosts());
 
-  handle('update:check', async () => checkUpdate((await s.settings.get()).updateRepo, app.getVersion()));
+  const updater = new Updater({
+    dir: path.join(app.getPath('userData'), 'updates'),
+    version: app.getVersion(),
+    platform: process.platform,
+    repo: async () => (await s.settings.get()).updateRepo || DEFAULT_UPDATE_REPO,
+    emit: (p) => s.emitProgress(p),
+    gamesRunning: () => s.games.runningCount(),
+    runInstaller: (file) =>
+      new Promise<void>((resolve, reject) => {
+        const child = spawn(file, ['--silent', '--launch'], { detached: true, stdio: 'ignore' });
+        child.once('error', (err) => reject(new AppError('UPDATE_RUN_FAILED', `Не удалось запустить установщик: ${err.message}`)));
+        child.once('spawn', () => { child.unref(); resolve(); });
+      }),
+    quit: () => app.quit(),
+  });
+  handle('update:check', () => updater.check());
+  handle('update:download', () => updater.start());
+  handle('update:install', () => updater.install());
 }

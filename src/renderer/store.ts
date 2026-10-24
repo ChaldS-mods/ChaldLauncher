@@ -44,6 +44,8 @@ interface State {
   setOffline(name: string): Promise<void>;
   setAccountMode(mode: AppSettings['accountMode']): Promise<void>;
   checkUpdate(): Promise<void>;
+  downloadUpdate(): Promise<void>;
+  installUpdate(): Promise<void>;
   refreshMemory(): Promise<void>;
   selected(): InstanceView | null;
 }
@@ -94,6 +96,10 @@ export const useStore = create<State>((set, get) => ({
       if (p.status !== 'running') {
         void get().refreshInstances();
         if (p.status === 'done' && p.kind === 'install' && !p.opId.startsWith('modrinth:')) get().toast('ok', 'Установка завершена');
+        if (p.kind === 'update' && p.status === 'done') {
+          void get().checkUpdate();
+          get().toast('ok', `${p.label}. Нажми «Установить» слева внизу, когда будешь готов.`);
+        }
         if (p.status === 'done' && p.kind === 'modpack') {
           get().toast('ok', p.label);
           if (p.instanceId) get().select(p.instanceId);
@@ -220,9 +226,30 @@ export const useStore = create<State>((set, get) => ({
 
   async checkUpdate() {
     try {
-      set({ update: await call('update:check') });
+      const info = await call('update:check');
+      set({ update: info });
+      // a new version: fetch it in the background (installing it always needs a click)
+      if (info.hasUpdate && info.assetName && !info.downloaded && !info.downloading && get().settings?.autoDownloadUpdates) void get().downloadUpdate();
     } catch {
       set({ update: null });
+    }
+  },
+
+  async downloadUpdate() {
+    try {
+      await call('update:download');
+      set((s) => (s.update ? { update: { ...s.update, downloading: true } } : s));
+    } catch (e) {
+      get().toast('error', errMsg(e));
+    }
+  },
+
+  async installUpdate() {
+    try {
+      await call('update:install');
+      get().toast('info', 'Запускаю установщик, лаунчер сейчас перезапустится…');
+    } catch (e) {
+      get().toast('error', errMsg(e));
     }
   },
 

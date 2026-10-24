@@ -95,6 +95,10 @@ export class Services {
     return s.instancesDir || path.join(this.o.dataDir, 'instances');
   }
 
+  emitProgress(p: OpProgress): void {
+    this.o.emit('op:progress', p);
+  }
+
   ctx(): InstanceCtx {
     return { running: this.games.activeIds(), installing: new Set(this.installs.keys()) };
   }

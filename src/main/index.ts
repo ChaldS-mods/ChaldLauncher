@@ -1,8 +1,9 @@
-import { app, BrowserWindow, safeStorage, session, shell } from 'electron';
+import { app, BrowserWindow, safeStorage, screen, session, shell } from 'electron';
 import * as path from 'node:path';
 import type { IpcEvents } from '../shared/ipc';
 import { registerIpc } from './ipc';
 import { Services } from './services';
+import { fitWindowSize } from './windowSize';
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL ?? '';
 const isDev = !app.isPackaged && DEV_URL !== '';
@@ -25,10 +26,7 @@ function openExternalSafe(url: string): void {
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 780,
-    minWidth: 1040,
-    minHeight: 660,
+    ...fitWindowSize(screen.getPrimaryDisplay().workAreaSize),
     frame: false,
     show: false,
     backgroundColor: '#020D18',

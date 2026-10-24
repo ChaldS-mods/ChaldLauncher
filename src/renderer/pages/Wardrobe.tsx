@@ -4,6 +4,7 @@ import type { AccountSkin, SkinEntry } from '../../shared/types';
 import { call, errMsg } from '../api';
 import { Icon } from '../components/Icon';
 import { SkinPreview } from '../components/SkinPreview';
+import { SkinViewer3D } from '../components/SkinViewer3D';
 import { ConfirmModal, Empty, Field, Skeleton } from '../components/ui';
 import { useStore } from '../store';
 
@@ -24,7 +25,8 @@ export function WardrobePage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [current, setCurrent] = useState<AccountSkin | null | undefined>(undefined); // undefined = not loaded
   const [currentError, setCurrentError] = useState<string | null>(null);
-  const [side, setSide] = useState<SkinSide>('front');
+  const [view, setView] = useState<'3d' | SkinSide>('3d');
+  const [walk, setWalk] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -155,14 +157,22 @@ export function WardrobePage() {
         <aside className="panel" aria-label="Выбранный скин">
           {selected ? (
             <>
-              <div className="stage">
-                <SkinPreview dataUrl={selected.dataUrl} variant={selected.variant} side={side} scale={10} label={`Предпросмотр: ${selected.name}`} />
+              <div className={`stage${view === '3d' ? ' stage--3d' : ''}`}>
+                {view === '3d'
+                  ? <SkinViewer3D dataUrl={selected.dataUrl} variant={selected.variant} walk={walk} label={`Предпросмотр: ${selected.name}`} />
+                  : <SkinPreview dataUrl={selected.dataUrl} variant={selected.variant} side={view} scale={10} label={`Предпросмотр: ${selected.name}`} />}
               </div>
               <div className="segmented" role="radiogroup" aria-label="Вид" style={{ alignSelf: 'center' }}>
-                {(['front', 'back'] as const).map((v) => (
-                  <button key={v} type="button" role="radio" aria-checked={side === v} className={side === v ? 'is-on' : ''} onClick={() => setSide(v)}>{v === 'front' ? 'Спереди' : 'Сзади'}</button>
+                {(['3d', 'front', 'back'] as const).map((v) => (
+                  <button key={v} type="button" role="radio" aria-checked={view === v} className={view === v ? 'is-on' : ''} onClick={() => setView(v)}>{v === '3d' ? '3D' : v === 'front' ? 'Спереди' : 'Сзади'}</button>
                 ))}
               </div>
+              {view === '3d' && (
+                <div className="row row--between">
+                  <span className="muted">Тяни — повернуть</span>
+                  <label className="row"><input type="checkbox" checked={walk} onChange={(e) => setWalk(e.target.checked)} /> Ходьба</label>
+                </div>
+              )}
               <Field label="Название">
                 <input className="input" value={nameDraft} maxLength={32} onChange={(e) => setNameDraft(e.target.value)} onBlur={() => void rename()} onKeyDown={(e) => e.key === 'Enter' && (e.currentTarget.blur())} />
               </Field>

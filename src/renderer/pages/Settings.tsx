@@ -10,11 +10,11 @@ import { recommendMemory } from '../../shared/memory';
 import { useStore } from '../store';
 import { memoryText, numOrNull } from '../util';
 
-type Draft = { instancesDir: string; downloadsDir: string; javaPath: string; memAuto: boolean; min: number; max: number; jvmArgs: string; width: string; height: string; fullscreen: boolean; closeBehavior: AppSettings['closeBehavior']; checkUpdates: boolean; updateRepo: string };
+type Draft = { instancesDir: string; downloadsDir: string; javaPath: string; memAuto: boolean; min: number; max: number; jvmArgs: string; width: string; height: string; fullscreen: boolean; closeBehavior: AppSettings['closeBehavior']; checkUpdates: boolean; autoDownload: boolean; updateRepo: string; uiSounds: boolean; soundVolume: number };
 
 const toDraft = (s: AppSettings): Draft => ({
   instancesDir: s.instancesDir, downloadsDir: s.downloadsDir, javaPath: s.javaPath, memAuto: s.memoryAuto, min: s.memoryMinMb, max: s.memoryMaxMb, jvmArgs: s.jvmArgs,
-  width: String(s.width), height: String(s.height), fullscreen: s.fullscreen, closeBehavior: s.closeBehavior, checkUpdates: s.checkUpdates, updateRepo: s.updateRepo,
+  width: String(s.width), height: String(s.height), fullscreen: s.fullscreen, closeBehavior: s.closeBehavior, checkUpdates: s.checkUpdates, autoDownload: s.autoDownloadUpdates, updateRepo: s.updateRepo, uiSounds: s.uiSounds, soundVolume: s.soundVolume,
 });
 
 function Section({ icon, title, children }: { icon: string; title: string; children: React.ReactNode }) {
@@ -51,7 +51,7 @@ export function SettingsPage() {
   const save = async () => {
     const nums = { width: numOrNull(d.width), height: numOrNull(d.height) };
     for (const [k, v] of Object.entries(nums)) if (v === null || Number.isNaN(v)) return setError(`Поле «${k}»: нужно число`);
-    const next = { ...settings, instancesDir: d.instancesDir.trim(), downloadsDir: d.downloadsDir.trim(), javaPath: d.javaPath.trim(), memoryAuto: d.memAuto, memoryMinMb: d.min, memoryMaxMb: d.max, jvmArgs: d.jvmArgs, fullscreen: d.fullscreen, closeBehavior: d.closeBehavior, checkUpdates: d.checkUpdates, updateRepo: d.updateRepo.trim(), ...nums };
+    const next = { ...settings, instancesDir: d.instancesDir.trim(), downloadsDir: d.downloadsDir.trim(), javaPath: d.javaPath.trim(), memoryAuto: d.memAuto, memoryMinMb: d.min, memoryMaxMb: d.max, jvmArgs: d.jvmArgs, fullscreen: d.fullscreen, closeBehavior: d.closeBehavior, checkUpdates: d.checkUpdates, autoDownloadUpdates: d.autoDownload, updateRepo: d.updateRepo.trim(), uiSounds: d.uiSounds, soundVolume: d.soundVolume, ...nums };
     const p = appSettingsSchema.safeParse(next);
     if (!p.success) return setError(p.error.issues[0]?.message ?? 'Проверь поля');
     setSaving(true);
@@ -119,10 +119,18 @@ export function SettingsPage() {
         </Field>
       </Section>
 
+      <Section icon="gear" title="Звуки">
+        <div className="row row--between"><span>Звуки при нажатии кнопок</span><Switch checked={d.uiSounds} label="Звуки при нажатии кнопок" onChange={(v) => set('uiSounds', v)} /></div>
+        <Field label={`Громкость: ${d.soundVolume}%`}>
+          <input type="range" min={0} max={100} step={5} value={d.soundVolume} disabled={!d.uiSounds} onChange={(e) => set('soundVolume', Number(e.target.value))} aria-label="Громкость звуков" />
+        </Field>
+      </Section>
+
       <Section icon="refresh" title="Обновления">
         <div className="row row--between"><span>Проверять обновления при запуске</span><Switch checked={d.checkUpdates} label="Проверять обновления" onChange={(v) => set('checkUpdates', v)} /></div>
-        <Field label="Репозиторий GitHub" hint="Формат: владелец/репозиторий. Пусто — проверка отключена. Лаунчер только сообщает о новой версии, сам ничего не устанавливает.">
-          <input className="input" value={d.updateRepo} onChange={(e) => set('updateRepo', e.target.value)} placeholder="chald-studio/chald-launcher" spellCheck={false} />
+        <div className="row row--between"><span>Скачивать обновления автоматически</span><Switch checked={d.autoDownload} label="Скачивать обновления автоматически" onChange={(v) => set('autoDownload', v)} /></div>
+        <Field label="Репозиторий GitHub" hint="Формат: владелец/репозиторий. Пусто — официальный репозиторий ChaldLauncher. Новая версия скачивается в фоне и проверяется по контрольной сумме; установить её нужно нажатием на кнопку слева внизу (в Windows лаунчер перезапустится сам).">
+          <input className="input" value={d.updateRepo} onChange={(e) => set('updateRepo', e.target.value)} placeholder="ChaldS-mods/ChaldLauncher" spellCheck={false} />
         </Field>
         <div className="row">
           <button type="button" className="btn btn--sm" onClick={() => void checkUpdate()}>Проверить сейчас</button>
