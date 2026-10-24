@@ -26,6 +26,17 @@ jobs:
       - name: Check secret
         run: |
           if [ -z "$VT_API_KEY" ]; then echo "::error::Секрет VT_API_KEY не задан"; exit 1; fi
+      - name: Resolve release tag
+        run: |
+          T="$(printf '%s' "$TAG" | tr -d '[:space:]')"
+          case "$T" in [0-9]*) T="v$T";; esac
+          echo "Ищу релиз: [$T]"
+          if ! gh release view "$T" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "::error::Релиз [$T] не найден. Существующие релизы:"
+            gh release list --repo "${{ github.repository }}" --limit 20 --json tagName,isDraft --jq '.[] | "\(.tagName) draft=\(.isDraft)"'
+            exit 1
+          fi
+          echo "TAG=$T" >> "$GITHUB_ENV"
       - name: Scan release files on VirusTotal
         run: |
           mkdir vt-files
