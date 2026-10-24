@@ -94,6 +94,10 @@ h1{font-size:clamp(34px,5vw,56px)}h2{font-size:clamp(28px,3.8vw,44px)}
 .tile{display:grid;place-items:center;width:64px;height:64px;margin-bottom:6px;background:#f4f7fb;box-shadow:inset 0 -4px 0 #c5d0dd,0 0 0 2px rgba(0,0,0,.25)}.tile svg{width:38px;height:38px}.you{position:absolute;right:14px;top:14px;padding:2px 12px;background:rgba(0,0,0,.35);font-size:15px;color:#fff}
 .meta{text-align:center;color:var(--dim);margin:28px auto 0;max-width:46em;font-size:16px}
 .meta a{color:var(--cyan)}.meta p{margin:6px 0}
+.vt{max-width:46em;margin:22px auto 0;text-align:center;color:var(--dim);font-size:16px}
+.vt h3{margin:0 0 6px;color:var(--text,inherit);font-size:1.1em}.vt-note{margin:0 0 10px}
+.vt ul{list-style:none;margin:0;padding:0}.vt li{margin:6px 0}
+.vt a{color:var(--cyan)}.vt .ok{color:#7fba00}.vt .bad{color:#ff6b6b}.vt code{font-size:.85em;opacity:.7}
 footer{padding:8px 0 48px;color:var(--faint);text-align:center;font-size:16px}
 @media(max-width:900px){.demo,.dls,.steps,.req{grid-template-columns:1fr}.fg,.sg{grid-template-columns:1fr 1fr}.stats{grid-template-columns:1fr}.pill.hide{display:none}}
 @media(max-width:560px){.fg,.sg{grid-template-columns:1fr}.app{grid-template-columns:1fr}.side{display:none}.panel{padding:36px 18px 56px}.bigcta{font-size:20px;padding:14px 26px}}
@@ -199,7 +203,8 @@ footer{padding:8px 0 48px;color:var(--faint);text-align:center;font-size:16px}
    <div class="os win-os" id="osWin"><i class="tile"><svg viewBox="0 0 15 15" shape-rendering="crispEdges" aria-hidden="true"><rect x="1" y="1" width="6" height="6" fill="#f25022"/><rect x="8" y="1" width="6" height="6" fill="#7fba00"/><rect x="1" y="8" width="6" height="6" fill="#00a4ef"/><rect x="8" y="8" width="6" height="6" fill="#ffb900"/></svg></i><h3>Windows</h3><small>10 и 11, 64 бита</small><a class="btn" id="dlWin" href="https://github.com/ChaldS-mods/ChaldLauncher/releases/latest">Скачать</a></div>
    <div class="os lin" id="osLin"><i class="tile"><svg viewBox="0 0 16 15" shape-rendering="crispEdges" aria-hidden="true"><rect x="6" y="0" width="4" height="1" fill="#1b1b1f"/><rect x="5" y="1" width="6" height="1" fill="#1b1b1f"/><rect x="5" y="2" width="1" height="1" fill="#1b1b1f"/><rect x="6" y="2" width="1" height="1" fill="#f4f4f4"/><rect x="7" y="2" width="2" height="1" fill="#1b1b1f"/><rect x="9" y="2" width="1" height="1" fill="#f4f4f4"/><rect x="10" y="2" width="1" height="1" fill="#1b1b1f"/><rect x="5" y="3" width="2" height="1" fill="#1b1b1f"/><rect x="7" y="3" width="2" height="1" fill="#f5b800"/><rect x="9" y="3" width="2" height="1" fill="#1b1b1f"/><rect x="4" y="4" width="2" height="1" fill="#1b1b1f"/><rect x="6" y="4" width="4" height="1" fill="#f5b800"/><rect x="10" y="4" width="2" height="1" fill="#1b1b1f"/><rect x="3" y="5" width="2" height="1" fill="#1b1b1f"/><rect x="5" y="5" width="6" height="1" fill="#f4f4f4"/><rect x="11" y="5" width="2" height="1" fill="#1b1b1f"/><rect x="2" y="6" width="3" height="1" fill="#1b1b1f"/><rect x="5" y="6" width="6" height="1" fill="#f4f4f4"/><rect x="11" y="6" width="3" height="1" fill="#1b1b1f"/><rect x="2" y="7" width="3" height="1" fill="#1b1b1f"/><rect x="5" y="7" width="6" height="1" fill="#f4f4f4"/><rect x="11" y="7" width="3" height="1" fill="#1b1b1f"/><rect x="2" y="8" width="3" height="1" fill="#1b1b1f"/><rect x="5" y="8" width="6" height="1" fill="#f4f4f4"/><rect x="11" y="8" width="3" height="1" fill="#1b1b1f"/><rect x="2" y="9" width="3" height="1" fill="#1b1b1f"/><rect x="5" y="9" width="6" height="1" fill="#f4f4f4"/><rect x="11" y="9" width="3" height="1" fill="#1b1b1f"/><rect x="3" y="10" width="2" height="1" fill="#1b1b1f"/><rect x="5" y="10" width="6" height="1" fill="#f4f4f4"/><rect x="11" y="10" width="2" height="1" fill="#1b1b1f"/><rect x="3" y="11" width="3" height="1" fill="#1b1b1f"/><rect x="6" y="11" width="4" height="1" fill="#f4f4f4"/><rect x="10" y="11" width="3" height="1" fill="#1b1b1f"/><rect x="4" y="12" width="8" height="1" fill="#1b1b1f"/><rect x="2" y="13" width="4" height="1" fill="#f5b800"/><rect x="6" y="13" width="1" height="1" fill="#1b1b1f"/><rect x="9" y="13" width="1" height="1" fill="#1b1b1f"/><rect x="10" y="13" width="4" height="1" fill="#f5b800"/><rect x="2" y="14" width="5" height="1" fill="#f5b800"/><rect x="9" y="14" width="5" height="1" fill="#f5b800"/></svg></i><h3>Linux</h3><small>AppImage и tar.gz, x64</small><a class="btn" id="dlLin" href="https://github.com/ChaldS-mods/ChaldLauncher/releases/latest">Скачать</a><a id="dlTar" href="https://github.com/ChaldS-mods/ChaldLauncher/releases/latest" style="font-size:16px" hidden>или tar.gz</a></div>
   </div>
-  <div class="meta"><p>Файлы релиза подписаны.</p><p id="sums"><a href="https://github.com/ChaldS-mods/ChaldLauncher/releases/latest">Все файлы релиза</a></p></div>
+  <div class="meta"><p>Файлы пока не подписаны цифровой подписью, поэтому Windows SmartScreen или антивирус могут ругаться и показывать «Неизвестный издатель». Это не значит, что файл заражён: проверь отчёты VirusTotal ниже и SHA-256.</p><p id="sums"><a href="https://github.com/ChaldS-mods/ChaldLauncher/releases/latest">Все файлы релиза</a></p></div>
+  <div class="vt" id="vt" hidden><h3>Проверка на вирусы</h3><p class="vt-note">Каждый файл релиза при сборке отправляется на VirusTotal. Отчёт открывается по ссылке.</p><ul id="vtList"></ul></div>
  </section>
 </div>
 <footer>ChaldLauncher — Chald Studio · не связан с Mojang и Microsoft · <a href="https://github.com/ChaldS-mods/ChaldLauncher">GitHub</a> · <a href="https://github.com/ChaldS-mods/ChaldLauncher/issues">Сообщить об ошибке</a></footer>
@@ -235,7 +240,20 @@ function apply(d){
   $("heroBtn").textContent="Скачать лаунчер "+d.tag;
   var h='<a href="'+esc(d.url)+'">Все файлы релиза</a>';
   (d.sums||[]).forEach(function(x){h+=' · <a href="'+esc(x.url)+'">'+esc(x.name)+'</a>'});
-  $("sums").innerHTML=h;news(d);stats(d.stats)}
+  $("sums").innerHTML=h;news(d);stats(d.stats);scans(d.vt)}
+function scans(list){
+ var ul=$("vtList");ul.textContent="";var n=0;
+ (list||[]).forEach(function(x){
+  if(!/^https:\/\/www\.virustotal\.com\//.test(x.url||""))return;
+  var bad=(x.malicious||0)+(x.suspicious||0),li=document.createElement("li");
+  var name=document.createElement("b");name.textContent=x.name+" — ";
+  var res=document.createElement("span");res.className=bad?"bad":"ok";
+  res.textContent=bad+" / "+x.total+(bad?" движков сработало":" — чисто");
+  var a=document.createElement("a");a.href=x.url;a.target="_blank";a.rel="noopener";a.textContent="Отчёт";
+  var h=document.createElement("code");h.textContent=" SHA-256 "+String(x.sha256||"").slice(0,12)+"…";
+  li.appendChild(name);li.appendChild(res);li.appendChild(document.createTextNode(" · "));li.appendChild(a);li.appendChild(h);
+  ul.appendChild(li);n++});
+ $("vt").hidden=!n}
 function assets(rel){return(rel.assets||[]).map(function(x){return{name:x.name,url:x.browser_download_url,size:x.size}})}
 function fromRel(rel){var a=assets(rel),f=function(re){return a.filter(function(x){return re.test(x.name)})[0]};
  return{tag:rel.tag_name||rel.name,date:rel.published_at,url:rel.html_url,body:rel.body,
