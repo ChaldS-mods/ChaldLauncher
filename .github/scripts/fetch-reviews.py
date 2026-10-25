@@ -15,6 +15,7 @@
 """
 import json, os, re, sys, time
 import urllib.error, urllib.request
+from datetime import datetime
 
 API = "https://discord.com/api/v10"
 TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
@@ -75,16 +76,48 @@ def clean(s):
     return s if len(s) <= MAX_TEXT else s[:MAX_TEXT - 1].rstrip() + "…"
 
 
+SEP = r"\s*[:：=—–-]?\s*"
+LBL_R = r"оценка|ацэнка|оцінка|рейтинг|балл|rating|score"
+LBL_P = r"(?:платформа|platform)\b" + SEP + r"|(?:ос|os|система)\s*[:：=—–-]\s*"
+LBL_T = r"текст|тэкст|отзыв|адгук|відгук|мнение|комментарий|коммент|text|review|comment"
+BULLET = re.compile(r"^(?:[>\-–•▸·*]+\s*|\d+[.)]\s+(?=[^\d\s]))+")
+STARS = "⭐★"
+
+
 def parse(c):
-    c = c.replace("**", "").replace("__", "")
-    mr = re.search(r"^\s*(?:оценка|rating)\s*[:：]\s*(\d+(?:[.,]\d+)?)(?:\s*/\s*5)?\s*$", c, re.I | re.M)
-    mp = re.search(r"^\s*(?:платформа|platform)\s*[:：]\s*(.+?)\s*$", c, re.I | re.M)
-    mt = re.search(r"^\s*(?:текст|отзыв|text|review)\s*[:：]\s*(.+)", c, re.I | re.M | re.S)
-    if not (mr and mp and mt):
-        return None
-    r = float(mr.group(1).replace(",", "."))
-    t, p = clean(mt.group(1)), platform(mp.group(1))
-    if not (0.5 <= r <= 5) or len(t) < 3 or not p:
+    """Отзыв = несколько строк с ключевыми словами в любом порядке и в любом регистре:
+    «Оценка», «Платформа», «Текст» (или «Отзыв»). Двоеточие необязательно, допустимы маркеры списка
+    («-», «•», «1.»), жирный шрифт и «4,5/5», «4.5 из 5», «⭐⭐⭐⭐». Если метки «Текст» нет,
+    текстом считаются строки без меток. Язык отзыва не проверяется."""
+    c = c.replace("**", "").replace("__", "").replace("`", "")
+    r = p = tl = None
+    free = []
+    for line in c.split("\n"):
+        ln = BULLET.sub("", line.strip()).strip()
+        if not ln:
+            continue
+        mr = re.match(r"(?:%s)\b%s(.*)$" % (LBL_R, SEP), ln, re.I)
+        mp = re.match(r"(?:%s)(.+)$" % LBL_P, ln, re.I)
+        mt = re.match(r"(?:%s)\b%s(.*)$" % (LBL_T, SEP), ln, re.I)
+        if mr and r is None:
+            rest = mr.group(1)
+            mn = re.match(r"(\d+(?:[.,]\d+)?)", rest)
+            if mn:
+                r = float(mn.group(1).replace(",", "."))
+            elif any(ch in rest for ch in STARS):
+                r = float(sum(rest.count(ch) for ch in STARS))
+            else:
+                free.append(ln)  # слово «оценка» в обычном тексте
+        elif mp and p is None:
+            p = platform(mp.group(1))
+        elif mt and tl is None:
+            tl = [mt.group(1)]
+        elif tl is not None:
+            tl.append(ln)
+        else:
+            free.append(ln)
+    t = clean(" ".join(x for x in (tl if tl is not None else free) if x))
+    if r is None or not p or not (0.5 <= r <= 5) or len(t) < 3:
         return None
     return round(r, 1), p, t
 
@@ -114,19 +147,32 @@ if humans and not any((m.get("content") or "").strip() for m in humans):
     print("::warning::У обычных сообщений пустой текст: проверь MESSAGE CONTENT INTENT у бота, "
           "либо в сообщениях только вложения/embed")
 
-seen, out = set(), []
-for m in msgs:  # Discord отдаёт от новых к старым
+GAP = 300  # Enter в Discord отправляет сообщение, поэтому строки одного автора ближе 5 минут склеиваются
+ts = lambda m: datetime.fromisoformat(m["timestamp"]).timestamp()
+groups = {}  # автор -> группы сообщений от старых к новым
+for m in reversed(msgs):  # Discord отдаёт от новых к старым
     a = m.get("author", {})
-    if a.get("bot") or m.get("type") not in (0, 19) or a.get("id") in seen:
+    c = (m.get("content") or "").strip()
+    if a.get("bot") or m.get("type") not in (0, 19) or not c:
         continue
-    rv = parse(m.get("content") or "")
-    if not rv:
-        continue
-    seen.add(a.get("id"))
-    e = {"r": rv[0], "p": rv[1], "t": rv[2], "d": (m.get("timestamp") or "")[:10]}
-    if SHOW_AUTHOR:
-        e["a"] = clean(a.get("global_name") or a.get("username") or "")[:32]
-    out.append(e)
+    t, name, d = ts(m), a.get("global_name") or a.get("username") or "", m["timestamp"][:10]
+    gl = groups.setdefault(a.get("id"), [])
+    if gl and parse(c) is None and t - gl[-1]["last"] <= GAP:
+        gl[-1]["parts"].append(c)
+        gl[-1].update(last=t, name=name, d=d)
+    else:  # полный отзыв в одном сообщении всегда начинает новую группу
+        gl.append({"parts": [c], "last": t, "name": name, "d": d})
+found = []
+for gl in groups.values():  # от автора берём последнюю группу, которая разбирается как отзыв
+    for g in reversed(gl):
+        rv = parse("\n".join(g["parts"]))
+        if rv:
+            e = {"r": rv[0], "p": rv[1], "t": rv[2], "d": g["d"]}
+            if SHOW_AUTHOR:
+                e["a"] = clean(g["name"])[:32]
+            found.append((g["last"], e))
+            break
+out = [e for _, e in sorted(found, key=lambda x: -x[0])]
 
 block = '<!--reviews:start--><script id="reviews-data" type="application/json">%s</script><!--reviews:end-->' % \
         json.dumps(out, ensure_ascii=False).replace("</", "<\\/")
