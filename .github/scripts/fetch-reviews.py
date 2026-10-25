@@ -97,9 +97,15 @@ for _ in range(MAX_PAGES):
         break
     before = batch[-1]["id"]
 
-humans = [m for m in msgs if not m.get("author", {}).get("bot")]
+for m in msgs[:10]:  # диагностика: без текста сообщений
+    a = m.get("author", {})
+    print("msg type=%s bot=%s content_len=%d embeds=%d attachments=%d" % (
+        m.get("type"), bool(a.get("bot")), len(m.get("content") or ""),
+        len(m.get("embeds") or []), len(m.get("attachments") or [])))
+humans = [m for m in msgs if not m.get("author", {}).get("bot") and m.get("type") in (0, 19)]
 if humans and not any((m.get("content") or "").strip() for m in humans):
-    print("::warning::Тексты сообщений пустые: включи MESSAGE CONTENT INTENT у бота (Developer Portal -> Bot)")
+    print("::warning::У обычных сообщений пустой текст: проверь MESSAGE CONTENT INTENT у бота, "
+          "либо в сообщениях только вложения/embed")
 
 seen, out = set(), []
 for m in msgs:  # Discord отдаёт от новых к старым
