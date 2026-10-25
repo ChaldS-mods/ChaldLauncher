@@ -89,6 +89,13 @@ def parse(c):
     return round(r, 1), p, t
 
 
+try:  # диагностика: чей это токен и включён ли Message Content Intent у приложения
+    app, bot = get(API + "/applications/@me"), get(API + "/users/@me")
+    print("Токен принадлежит боту %s (id %s), приложение «%s», Message Content Intent включён: %s" % (
+        bot.get("username"), bot.get("id"), app.get("name"), bool((app.get("flags") or 0) & ((1 << 18) | (1 << 19)))))
+except SystemExit as e:
+    print("Диагностика токена не удалась:", e)
+
 msgs, before = [], None
 for _ in range(MAX_PAGES):
     batch = get("%s/channels/%s/messages?limit=100%s" % (API, CHANNEL, "&before=" + before if before else ""))
