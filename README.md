@@ -36,18 +36,6 @@ Mojang напрямую, эти запросы не видны на вкладк
 
 ## Вход через Microsoft
 
-Лаунчеру нужен **свой** Azure Client ID. ID официального Minecraft Launcher использовать нельзя: он принадлежит
-Mojang, не предназначен для чужих программ, и лаунчер выдавал бы себя за официальный.
-
-1. portal.azure.com → Microsoft Entra ID → App registrations → New registration.
-2. Supported account types: «Personal Microsoft accounts only» (или «Accounts in any ... and personal»).
-3. Redirect URI: платформа «Mobile and desktop applications», значение `http://localhost`.
-   Authentication → «Allow public client flows» = Yes (нужно для входа по коду).
-4. Скопируй Application (client) ID.
-5. Подай заявку на доступ к Minecraft API: https://aka.ms/AppRegInfo (без одобрения Mojang вход закончится ошибкой
-   вида «Invalid app registration»).
-6. Вставь ID в `src/main/config.ts` (`DEFAULT_MS_CLIENT_ID`), чтобы он работал у всех пользователей. Поля для ввода в интерфейсе нет: ID зашит в сборку.
-
 Вход идёт через системный браузер (PKCE, временный локальный порт). Если он недоступен, есть вход по коду.
 Токены хранятся только в зашифрованном виде (safeStorage).
 
