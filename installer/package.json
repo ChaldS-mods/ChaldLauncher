@@ -4,7 +4,7 @@
   "version": "0.2.0",
   "description": "Установщик ChaldLauncher",
   "author": "Chald Studio",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "private": true,
   "main": "dist/main.js",
   "scripts": {
