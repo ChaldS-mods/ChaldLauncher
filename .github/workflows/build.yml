@@ -1,0 +1,70 @@
+name: Build
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            installer/package-lock.json
+      - run: npm ci
+      - run: npm --prefix installer ci
+      - run: npm test
+      - run: npm --prefix installer test
+      # лаунчер (release/win-unpacked) -> payload -> installer/release/ChaldLauncher-Setup.exe
+      - run: npm run installer
+      - name: Zip launcher
+        shell: pwsh
+        run: Compress-Archive -Path release/win-unpacked/* -DestinationPath ChaldLauncher-win-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            installer/release/ChaldLauncher-Setup.exe
+            ChaldLauncher-win-x64.zip
+      - name: Upload to release
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" installer/release/ChaldLauncher-Setup.exe ChaldLauncher-win-x64.zip --clobber
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run dist:linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            release/*.AppImage
+            release/*.tar.gz
+      - name: Upload to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" release/*.AppImage release/*.tar.gz --clobber
