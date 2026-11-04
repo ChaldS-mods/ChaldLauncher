@@ -113,3 +113,16 @@ jobs:
             git pull --rebase
             git push
           fi
+
+      - name: Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.AppImage
+            dist/*.tar.gz
+            installer/release/ChaldLauncher-Setup.exe
+            ChaldLauncher-win-x64.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
