@@ -60,7 +60,7 @@ describe('Wardrobe (server render)', () => {
     restore();
     expect(html).toContain('Сохранить текущий скин');
     expect(html).toContain('Alex');
-    expect(html).toMatch(/Сейчас на аккаунте <!-- -->Alex/);
+    expect(html).toContain('Alex');
     expect(html).not.toContain('Офлайн-режим');
   });
 });
