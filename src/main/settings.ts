@@ -1,0 +1,91 @@
+import * as path from 'node:path';
+import type { AppSettings } from '../shared/types';
+import { DEFAULT_DNS_SERVERS, DEFAULT_DOH_URL } from '../shared/dns';
+import { DEFAULT_THEME } from '../shared/theme';
+import { appSettingsPatchSchema, appSettingsSchema } from '../shared/schemas';
+import { AppError } from './errors';
+import { readJson, writeJsonAtomic } from './storage';
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  instancesDir: '',
+  downloadsDir: '',
+  javaPath: '',
+  memoryMinMb: 1024,
+  memoryMaxMb: 4096,
+  memoryAuto: true,
+  jvmArgs: '-XX:+UseG1GC',
+  width: 1280,
+  height: 720,
+  fullscreen: false,
+  closeBehavior: 'quit',
+  checkUpdates: true,
+  autoDownloadUpdates: true,
+  updateRepo: '',
+  uiSounds: true,
+  soundVolume: 50,
+  discordRpc: true,
+  discordShowInstance: true,
+  themeBg: DEFAULT_THEME.bg,
+  themeAccent: DEFAULT_THEME.accent,
+  themeSecondary: DEFAULT_THEME.secondary,
+  themeHighlight: DEFAULT_THEME.highlight,
+  uiScale: 100,
+  cornerStyle: 'normal',
+  glow: 100,
+  fontMode: 'pixel',
+  animations: true,
+  compactSidebar: false,
+  hiddenPages: [],
+  sidebarSide: 'left',
+  panelSide: 'right',
+  panelWidth: 380,
+  showStatusBar: true,
+  customCss: '',
+  customHtml: '',
+  dnsMode: 'system',
+  dnsServers: DEFAULT_DNS_SERVERS,
+  dnsDohUrl: DEFAULT_DOH_URL,
+  msClientId: '',
+  accountMode: 'microsoft',
+  offlineName: '',
+  lastInstanceId: null,
+  language: 'ru',
+};
+
+export class SettingsStore {
+  private cache: AppSettings | null = null;
+
+  constructor(private file: string) {}
+
+  async get(): Promise<AppSettings> {
+    if (this.cache) return this.cache;
+    let stored: unknown = null;
+    try {
+      stored = await readJson<unknown>(this.file);
+    } catch {
+      stored = null; // corrupted file: fall back to defaults, do not crash
+    }
+    const merged = { ...DEFAULT_SETTINGS, ...(typeof stored === 'object' && stored ? stored : {}) };
+    const parsed = appSettingsSchema.safeParse(merged);
+    this.cache = parsed.success ? parsed.data : { ...DEFAULT_SETTINGS };
+    return this.cache;
+  }
+
+  async set(patch: unknown): Promise<AppSettings> {
+    const p = appSettingsPatchSchema.safeParse(patch);
+    if (!p.success) throw new AppError('SETTINGS_INVALID', p.error.issues[0]?.message ?? 'Некорректные настройки');
+    const next = { ...(await this.get()), ...p.data };
+    const full = appSettingsSchema.safeParse(next);
+    if (!full.success) throw new AppError('SETTINGS_INVALID', full.error.issues[0]?.message ?? 'Некорректные настройки');
+    for (const key of ['instancesDir', 'downloadsDir'] as const) {
+      const v = full.data[key];
+      if (v && !path.isAbsolute(v)) throw new AppError('SETTINGS_INVALID', 'Путь к папке должен быть абсолютным');
+    }
+    if (full.data.javaPath && !path.isAbsolute(full.data.javaPath)) {
+      throw new AppError('SETTINGS_INVALID', 'Путь к Java должен быть абсолютным');
+    }
+    await writeJsonAtomic(this.file, full.data);
+    this.cache = full.data;
+    return full.data;
+  }
+}

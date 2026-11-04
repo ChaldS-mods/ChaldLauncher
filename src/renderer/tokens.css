@@ -1,0 +1,74 @@
+/* ChaldPixel: Pixelify Sans with a redrawn Latin/Cyrillic e, Cyrillic в, О and П (the original Cyrillic set was incomplete
+   and its «е» looked like a mirrored «э»). One file covers Latin + Cyrillic. */
+@font-face {
+  font-family: 'ChaldPixel';
+  src: url('./fonts/ChaldPixel.woff') format('woff');
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: block;
+}
+
+:root {
+  /* palette */
+  --bg: #020d18;
+  --bg-deep: #010912;
+  --surface: #041827;
+  --surface-2: #07243a;
+  --surface-3: #0a3050;
+  --accent: #00acff;
+  --accent-hi: #38c2ff;
+  --accent-ink: #012033;
+  --teal: #289d85;
+  --cyan: #00d5ff;
+  --text: #e6f4ff;
+  --text-dim: #8fb0c8;
+  --text-faint: #5d7f98;
+  --danger: #ff5c6c;
+  --warn: #ffb347;
+  --ok: #3ddc97;
+
+  /* borders and glow */
+  --border: rgba(0, 172, 255, 0.28);
+  --border-soft: rgba(0, 172, 255, 0.14);
+  --border-strong: rgba(0, 172, 255, 0.6);
+  --glow: 0 0 14px rgba(0, 172, 255, 0.22);
+  --glow-strong: 0 0 20px rgba(0, 172, 255, 0.42);
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--cyan);
+
+  /* spacing */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+
+  /* radii */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+
+  /* layout */
+  --titlebar-h: 64px;
+  --sidebar-w: 232px;
+  --statusbar-h: 44px;
+  --panel-w: 380px;
+
+  /* type */
+  /* One pixel font for all interface text; Rubik is only a fallback for symbols the pixel font lacks. */
+  --font-head: 'ChaldPixel', 'Rubik', system-ui, sans-serif;
+  --font-body: 'ChaldPixel', 'Rubik', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', Consolas, 'Liberation Mono', monospace;
+
+  --t-fast: 0.15s ease;
+  --t-med: 0.25s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --t-fast: 0s;
+    --t-med: 0s;
+  }
+}

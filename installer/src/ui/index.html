@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Установка ChaldLauncher</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="win">
+    <header class="titlebar">
+      <span class="titlebar__title" id="winTitle">Установка</span>
+      <div class="titlebar__btns">
+        <button class="icon-btn" id="btnMin" type="button" aria-label="Свернуть" title="Свернуть">
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 10h10" stroke="currentColor" stroke-width="2" /></svg>
+        </button>
+        <button class="icon-btn icon-btn--close" id="btnClose" type="button" aria-label="Закрыть" title="Закрыть">
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="2" /></svg>
+        </button>
+      </div>
+    </header>
+
+    <aside class="side">
+      <svg class="logo" width="112" height="112" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+        <path d="M24 3l18 10.2v21.6L24 45 6 34.8V13.2L24 3z" stroke="var(--cyan)" stroke-width="2.2" stroke-linejoin="round" />
+        <path d="M24 3v21m0 0l18-10.8M24 24L6 13.2" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" />
+        <path d="M24 24v21" stroke="var(--teal)" stroke-width="2" />
+        <path d="M24 14l8 4.6v9.2L24 32.4l-8-4.6v-9.2L24 14z" fill="var(--accent)" fill-opacity=".22" />
+      </svg>
+      <h1 class="side__name" id="productName">ChaldLauncher</h1>
+      <p class="side__ver" id="version">&nbsp;</p>
+      <p class="side__by">Chald Studio</p>
+    </aside>
+
+    <main class="main">
+      <section class="page" id="pageLoading">
+        <p class="muted">Загрузка…</p>
+      </section>
+
+      <section class="page" id="pageWelcome" hidden>
+        <h2 id="welcomeTitle">Установка</h2>
+        <p class="lead" id="welcomeLead"></p>
+
+        <label class="field-label" for="dir">Папка установки</label>
+        <div class="row">
+          <input class="input" id="dir" type="text" readonly spellcheck="false" />
+          <button class="btn" id="btnBrowse" type="button">Обзор…</button>
+        </div>
+        <p class="hint" id="space">&nbsp;</p>
+
+        <label class="check"><input type="checkbox" id="optDesktop" checked /><span class="check__box"></span><span>Ярлык на рабочем столе</span></label>
+        <label class="check"><input type="checkbox" id="optMenu" checked /><span class="check__box"></span><span>Ярлык в меню «Пуск»</span></label>
+
+        <div class="footer">
+          <button class="btn" id="btnCancel" type="button">Отмена</button>
+          <button class="btn btn--primary" id="btnInstall" type="button">Установить</button>
+        </div>
+      </section>
+
+      <section class="page" id="pageProgress" hidden>
+        <h2 id="progressTitle">Установка…</h2>
+        <p class="lead" id="progressPhase">Подготовка…</p>
+        <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="bar">
+          <div class="bar__fill" id="barFill"></div>
+        </div>
+        <div class="bar__meta"><span class="file" id="progressFile">&nbsp;</span><span id="progressPct">0%</span></div>
+        <div class="footer">
+          <button class="btn btn--danger" id="btnAbort" type="button">Отмена</button>
+        </div>
+      </section>
+
+      <section class="page" id="pageDone" hidden>
+        <div class="badge badge--ok" aria-hidden="true">
+          <svg width="30" height="30" viewBox="0 0 30 30"><path d="M6 16l6 6 12-14" stroke="currentColor" stroke-width="3.2" fill="none" stroke-linecap="square" /></svg>
+        </div>
+        <h2 id="doneTitle">Готово</h2>
+        <p class="lead" id="doneText"></p>
+        <ul class="warnings" id="warnings" hidden></ul>
+        <label class="check"><input type="checkbox" id="optLaunch" checked /><span class="check__box"></span><span>Запустить ChaldLauncher</span></label>
+        <div class="footer">
+          <button class="btn btn--primary" id="btnFinish" type="button">Готово</button>
+        </div>
+      </section>
+
+      <section class="page" id="pageError" hidden>
+        <div class="badge badge--err" aria-hidden="true">
+          <svg width="30" height="30" viewBox="0 0 30 30"><path d="M8 8l14 14M22 8L8 22" stroke="currentColor" stroke-width="3.2" fill="none" stroke-linecap="square" /></svg>
+        </div>
+        <h2>Не получилось</h2>
+        <p class="lead error-text" id="errorText"></p>
+        <div class="footer">
+          <button class="btn" id="btnErrClose" type="button">Закрыть</button>
+          <button class="btn btn--primary" id="btnRetry" type="button">Назад</button>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
