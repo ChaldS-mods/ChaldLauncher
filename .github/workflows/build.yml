@@ -68,3 +68,45 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ github.event.release.tag_name }}" release/*.AppImage release/*.tar.gz --clobber
+
+  # После загрузки файлов в релиз: вписать версию и ссылки в docs/index.html и закоммитить в основную ветку.
+  site:
+    needs: [windows, linux]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      # Файлы релиза -> VirusTotal. Нужен секрет VT_API_KEY (Settings -> Secrets -> Actions).
+      # Без секрета или при сбое VirusTotal шаг не роняет сборку: сайт просто обновится без отчётов.
+      - name: Scan release files on VirusTotal
+        continue-on-error: true
+        env:
+          VT_API_KEY: ${{ secrets.VT_API_KEY }}
+        run: |
+          mkdir vt-files
+          gh release download "$TAG" --repo "${{ github.repository }}" --dir vt-files \
+            --pattern '*.exe' --pattern '*.zip' --pattern '*.AppImage' --pattern '*.tar.gz'
+          python3 .github/scripts/virustotal.py vt.json vt-files/*
+      - name: Update site data
+        run: |
+          gh release view "$TAG" --repo "${{ github.repository }}" --json tagName,publishedAt,url,assets,body > release.json
+          gh api "repos/${{ github.repository }}/releases?per_page=100" > all.json
+          python3 .github/scripts/update-site.py release.json docs/index.html all.json vt.json
+          rm -rf release.json all.json vt.json vt-files
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/index.html
+          if git diff --cached --quiet; then
+            echo "Без изменений"
+          else
+            git commit -m "site: $TAG"
+            git pull --rebase
+            git push
+          fi

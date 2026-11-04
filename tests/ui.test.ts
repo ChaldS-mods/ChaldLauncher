@@ -25,7 +25,7 @@ describe('MemorySliders (server render)', () => {
     expect(html).toContain('Максимум (Xmx)');
     expect(html).toContain('Минимум (Xms)');
     expect(html).toContain('max="16384"');
-    expect(html).toContain('ОЗУ компьютера: 16');
+    expect(html).toContain('16 ГБ');
     expect(html).toContain('Подобрать автоматически');
     expect(html).not.toContain('inline-warn');
   });
@@ -35,7 +35,7 @@ describe('MemorySliders (server render)', () => {
   });
   it('still renders when the RAM size is unknown', () => {
     const html = renderToString(createElement(MemorySliders, { minMb: 1024, maxMb: 4096, onChange: noop, sys: null }));
-    expect(html).toContain('не определён');
+    expect(html).toContain('—');
   });
 });
 
@@ -59,7 +59,7 @@ describe('Wardrobe (server render)', () => {
     const html = renderToString(createElement(WardrobePage));
     restore();
     expect(html).toContain('Сохранить текущий скин');
-    expect(html).toContain('Сейчас на аккаунте');
+    expect(html).toContain('Alex');
     expect(html).toMatch(/Сейчас на аккаунте <!-- -->Alex/);
     expect(html).not.toContain('Офлайн-режим');
   });

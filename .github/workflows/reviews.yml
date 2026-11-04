@@ -1,0 +1,40 @@
+name: Reviews
+
+# Каждые ~15 минут читает канал отзывов в Discord (через бота) и обновляет блок отзывов в docs/index.html.
+# Нужен секрет DISCORD_BOT_TOKEN (Settings -> Secrets and variables -> Actions).
+# GitHub может запускать cron с задержкой в несколько минут, это нормально.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: reviews
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Fetch reviews from Discord
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+        run: python3 .github/scripts/fetch-reviews.py docs/index.html
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/index.html
+          if git diff --cached --quiet; then
+            echo "Без изменений"
+          else
+            git commit -m "site: reviews"
+            git pull --rebase
+            git push
+          fi

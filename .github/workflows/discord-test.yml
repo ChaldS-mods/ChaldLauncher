@@ -1,0 +1,51 @@
+name: Discord test
+
+# Ручной тест: показывает, какому боту принадлежит токен DISCORD_BOT_TOKEN, включён ли у него
+# Message Content Intent, и отправляет в канал тестовое сообщение от имени этого бота.
+# Actions -> Discord test -> Run workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "ID канала (по умолчанию канал отзывов)"
+        default: "1563873955759267871"
+      text:
+        description: "Текст сообщения"
+        default: "Тест: бот подключён и может писать в этот канал."
+
+permissions: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check token and post message
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          CHANNEL: ${{ inputs.channel }}
+          TEXT: ${{ inputs.text }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys, urllib.request, urllib.error
+          API = "https://discord.com/api/v10"
+          T = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
+          if not T:
+              sys.exit("Секрет DISCORD_BOT_TOKEN не задан")
+          def call(method, path, body=None):
+              req = urllib.request.Request(API + path, method=method,
+                  data=json.dumps(body).encode() if body is not None else None,
+                  headers={"Authorization": "Bot " + T, "Content-Type": "application/json",
+                           "User-Agent": "DiscordBot (https://github.com/ChaldS-mods/ChaldLauncher, 1.0)"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      return json.loads(r.read().decode())
+              except urllib.error.HTTPError as e:
+                  hint = {401: "неверный токен", 403: "нет прав (нужны View Channel, Send Messages)", 404: "канал не найден"}.get(e.code, "")
+                  sys.exit("HTTP %s %s на %s: %s" % (e.code, hint, path, e.read()[:300]))
+          bot, app = call("GET", "/users/@me"), call("GET", "/applications/@me")
+          on = bool((app.get("flags") or 0) & ((1 << 18) | (1 << 19)))
+          print("Бот: %s (id %s), приложение: %s, Message Content Intent включён: %s" % (bot.get("username"), bot.get("id"), app.get("name"), on))
+          m = call("POST", "/channels/%s/messages" % os.environ["CHANNEL"].strip(),
+                   {"content": os.environ["TEXT"][:1800], "allowed_mentions": {"parse": []}})
+          print("Сообщение отправлено, id", m["id"])
+          EOF
