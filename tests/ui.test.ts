@@ -26,7 +26,7 @@ describe('MemorySliders (server render)', () => {
     expect(html).toContain('Минимум (Xms)');
     expect(html).toContain('max="16384"');
     expect(html).toContain('16 ГБ');
-    expect(html).toContain('Подобрать автоматически');
+    expect(html).toContain('Подбирать память автоматически');
     expect(html).not.toContain('inline-warn');
   });
   it('warns when the heap does not fit into the RAM', () => {
