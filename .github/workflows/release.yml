@@ -106,8 +106,8 @@ jobs:
         run: |
           ls -la assets
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" assets/* --clobber
+            gh release upload "$TAG" $(find assets -type f) --clobber
           else
-            gh release create "$TAG" assets/* --draft --verify-tag --title "ChaldLauncher ${TAG#v}" --notes-file notes.md
+            gh release create "$TAG" $(find assets -type f) --draft --verify-tag --title "ChaldLauncher ${TAG#v}" --notes-file notes.md
           fi
           gh release edit "$TAG" --draft=false --latest
