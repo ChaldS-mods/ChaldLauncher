@@ -67,10 +67,10 @@ describe('update helpers', () => {
 
 describe('fitWindowSize', () => {
   it('keeps the normal size on a big screen', () => {
-    expect(fitWindowSize({ width: 1920, height: 1040 })).toEqual({ width: 1280, height: 780, minWidth: 1040, minHeight: 660 });
+    expect(fitWindowSize({ width: 1920, height: 1040 })).toEqual({ width: 1360, height: 860, minWidth: 1100, minHeight: 720 });
   });
   it('shrinks to a small screen (1366x728 work area, 1280x600 at 150% scaling)', () => {
-    expect(fitWindowSize({ width: 1366, height: 728 })).toMatchObject({ width: 1280, height: 728, minHeight: 660 });
+    expect(fitWindowSize({ width: 1366, height: 728 })).toMatchObject({ width: 1360, height: 728, minHeight: 720 });
     expect(fitWindowSize({ width: 1280, height: 600 })).toMatchObject({ width: 1280, height: 600, minHeight: 600 });
     expect(fitWindowSize({ width: 1000, height: 560 })).toEqual({ width: 1000, height: 560, minWidth: 1000, minHeight: 560 });
   });
