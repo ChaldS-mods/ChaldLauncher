@@ -7,6 +7,9 @@
 
 Бесплатный ключ VirusTotal: 4 запроса в минуту, поэтому на 429 скрипт ждёт и повторяет.
 Файлы больше 32 МБ грузятся через одноразовый upload_url (лимит VT — 650 МБ).
+
+Если файл уже отправляли (HTTP 409 AlreadySubmittedError) или он уже есть в VT —
+скрипт не грузит повторно, а ждёт готовый отчёт по SHA-256.
 """
 import hashlib, json, os, sys, time, uuid
 import urllib.error, urllib.request
@@ -26,10 +29,11 @@ def call(method, url, data=None, headers=None, tries=6):
             with urllib.request.urlopen(req, timeout=600) as r:
                 return json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
+            body = e.read()
             if e.code in (429, 500, 502, 503, 504) and i < tries - 1:
                 time.sleep(20 * (i + 1))
                 continue
-            raise RuntimeError("VT %s %s -> HTTP %s: %s" % (method, url, e.code, e.read()[:300]))
+            raise RuntimeError("VT %s %s -> HTTP %s: %s" % (method, url, e.code, body[:500]))
         except (urllib.error.URLError, TimeoutError) as e:
             if i < tries - 1:
                 time.sleep(10 * (i + 1))
@@ -45,6 +49,31 @@ def sha256(path):
     return h.hexdigest()
 
 
+def get_file_report(digest):
+    """Готовый отчёт по хешу или None, если файла ещё нет / анализ не завершён."""
+    try:
+        res = call("GET", API + "/files/" + digest)
+    except RuntimeError as e:
+        if "HTTP 404" in str(e):
+            return None
+        raise
+    attrs = res["data"]["attributes"]
+    # last_analysis_stats есть только после хотя бы одного завершённого анализа
+    if "last_analysis_stats" not in attrs:
+        return None
+    return attrs
+
+
+def wait_file_report(digest):
+    """Ждём, пока VT закончит анализ файла, известного по хешу."""
+    while time.time() < DEADLINE:
+        attrs = get_file_report(digest)
+        if attrs is not None:
+            return attrs
+        time.sleep(20)
+    raise RuntimeError("VT: отчёт по %s не появился вовремя" % digest[:12])
+
+
 def upload(path):
     size = os.path.getsize(path)
     url = API + "/files"
@@ -52,22 +81,77 @@ def upload(path):
         url = call("GET", API + "/files/upload_url")["data"]
     boundary = uuid.uuid4().hex
     name = os.path.basename(path).replace('"', "")
-    head = ('--%s\r\nContent-Disposition: form-data; name="file"; filename="%s"\r\n'
-            'Content-Type: application/octet-stream\r\n\r\n' % (boundary, name)).encode()
+    head = (
+        '--%s\r\nContent-Disposition: form-data; name="file"; filename="%s"\r\n'
+        "Content-Type: application/octet-stream\r\n\r\n" % (boundary, name)
+    ).encode()
     tail = ("\r\n--%s--\r\n" % boundary).encode()
     with open(path, "rb") as f:
         body = head + f.read() + tail
     res = call("POST", url, body, {"content-type": "multipart/form-data; boundary=" + boundary})
-    return res["data"]["id"]
+    return res["data"]["id"]  # analysis id
 
 
-def wait(analysis_id):
+def wait_analysis(analysis_id):
     while time.time() < DEADLINE:
         a = call("GET", API + "/analyses/" + analysis_id)["data"]["attributes"]
         if a.get("status") == "completed":
             return a
         time.sleep(20)
     raise RuntimeError("VT: анализ %s не завершился вовремя" % analysis_id)
+
+
+def result_from_attrs(name, digest, attrs):
+    """attrs — либо last_analysis_stats из /files/{hash}, либо stats из /analyses/{id}."""
+    st = attrs.get("last_analysis_stats") or attrs.get("stats") or {}
+    malicious = st.get("malicious", 0)
+    suspicious = st.get("suspicious", 0)
+    total = (
+        malicious
+        + suspicious
+        + st.get("undetected", 0)
+        + st.get("harmless", 0)
+        + st.get("timeout", 0)
+        + st.get("failure", 0)
+        + st.get("type-unsupported", 0)
+    )
+    date = attrs.get("last_analysis_date") or attrs.get("date")
+    return {
+        "name": name,
+        "sha256": digest,
+        "malicious": malicious,
+        "suspicious": suspicious,
+        "total": total,
+        "url": "https://www.virustotal.com/gui/file/" + digest,
+        "date": date,
+    }
+
+
+def process_one(path):
+    name = os.path.basename(path)
+    digest = sha256(path)
+    print("Обрабатываю %s (%s)" % (name, digest[:12]))
+
+    # 1) Уже есть готовый отчёт?
+    attrs = get_file_report(digest)
+    if attrs is not None:
+        print("  уже есть в VT, берём готовый отчёт")
+        return result_from_attrs(name, digest, attrs)
+
+    # 2) Пробуем загрузить
+    try:
+        analysis_id = upload(path)
+        print("  загружен, analysis id = %s" % analysis_id[:16])
+        attrs = wait_analysis(analysis_id)
+        return result_from_attrs(name, digest, attrs)
+    except RuntimeError as e:
+        msg = str(e)
+        # Уже в очереди / уже отправляли — ждём по хешу
+        if "AlreadySubmittedError" in msg or "HTTP 409" in msg:
+            print("  AlreadySubmitted — ждём отчёт по хешу")
+            attrs = wait_file_report(digest)
+            return result_from_attrs(name, digest, attrs)
+        raise
 
 
 def main():
@@ -81,28 +165,18 @@ def main():
     for path in files:
         name = os.path.basename(path)
         try:
-            digest = sha256(path)
-            print("Отправляю %s (%s)" % (name, digest[:12]))
-            attrs = wait(upload(path))
-            st = attrs["stats"]
-            malicious, suspicious = st.get("malicious", 0), st.get("suspicious", 0)
-            total = malicious + suspicious + st.get("undetected", 0) + st.get("harmless", 0)
-            results.append({
-                "name": name,
-                "sha256": digest,
-                "malicious": malicious,
-                "suspicious": suspicious,
-                "total": total,
-                "url": "https://www.virustotal.com/gui/file/" + digest,
-                "date": attrs.get("date"),
-            })
-            print("  %s: %d злонамеренных, %d подозрительных из %d движков" % (name, malicious, suspicious, total))
-        except Exception as e:  # один сбойный файл не должен ронять остальные
+            results.append(process_one(path))
+            r = results[-1]
+            print(
+                "  %s: %d злонамеренных, %d подозрительных из %d движков"
+                % (name, r["malicious"], r["suspicious"], r["total"])
+            )
+        except Exception as e:
             failed += 1
             print("  не удалось проверить %s: %s" % (name, e), file=sys.stderr)
     if not results:
         sys.exit("VirusTotal: ни один файл не проверен")
-    json.dump(results, open(out, "w", encoding="utf-8"), ensure_ascii=False)
+    json.dump(results, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     if failed:
         print("Проверено %d из %d файлов" % (len(results), len(files)), file=sys.stderr)
 
