@@ -7,13 +7,13 @@ import { PRESENCE_PAGES } from '../src/shared/presence';
 import { PAGE_LABELS } from '../src/main/presence';
 import { bedrockUri, parseBedrockServer, storeUri } from '../src/shared/mojang';
 import { appSettingsPatchSchema, mojangLaunchSchema } from '../src/shared/schemas';
-import { launcherExeCandidates, MojangGames, parseAppx, type MojangDeps } from '../src/main/mojangGames';
+import { launcherExeCandidates, linuxBedrockCandidates, MojangGames, parseAppx, type MojangDeps } from '../src/main/mojangGames';
 
 const BEDROCK = { Name: 'Microsoft.MinecraftUWP', Family: 'Microsoft.MinecraftUWP_8wekyb3d8bbwe', AppId: 'App' };
 const LAUNCHER = { Name: 'Microsoft.4297127D64EC6', Family: 'Microsoft.4297127D64EC6_8wekyb3d8bbwe', AppId: 'Minecraft' };
 
 function make(over: Partial<MojangDeps> & { pkgs?: unknown; files?: string[] } = {}) {
-  const calls = { uri: [] as string[], spawn: [] as [string, string[]][] };
+  const calls = { uri: [] as string[], spawn: [] as [string, string[]][], run: [] as [string, string[]][] };
   const deps: MojangDeps = {
     platform: 'win32',
     env: { 'ProgramFiles(x86)': 'C:\\Program Files (x86)', ProgramFiles: 'C:\\Program Files' },
@@ -21,6 +21,7 @@ function make(over: Partial<MojangDeps> & { pkgs?: unknown; files?: string[] } =
     exists: async (f) => (over.files ?? []).includes(f),
     openUri: async (u) => { calls.uri.push(u); },
     spawnDetached: (f, a) => { calls.spawn.push([f, a]); },
+    run: async (f, a) => { calls.run.push([f, a]); return ''; },
     ...over,
   };
   return { games: new MojangGames(deps), calls };
@@ -65,12 +66,107 @@ describe('server validation', () => {
 });
 
 describe('MojangGames', () => {
-  it('is unsupported (and does nothing) outside Windows', async () => {
-    const { games, calls } = make({ platform: 'linux' });
-    expect(await games.status()).toEqual({ supported: false, launcherFound: false, games: [] });
+  it('is unsupported (and does nothing) outside Windows and Linux', async () => {
+    const { games, calls } = make({ platform: 'darwin' });
+    expect(await games.status()).toEqual({ supported: false, os: 'other', quickServer: false, launcherFound: false, games: [] });
     await expect(games.launch('bedrock')).rejects.toMatchObject({ code: 'MOJANG_UNSUPPORTED' });
     await expect(games.openStore('bedrock')).rejects.toMatchObject({ code: 'MOJANG_UNSUPPORTED' });
     expect(calls.uri).toEqual([]);
+    expect(calls.spawn).toEqual([]);
+  });
+
+  describe('Linux (mcpelauncher)', () => {
+    const env = { PATH: '/usr/local/bin:/usr/bin:relative/bin', HOME: '/home/u' };
+    it('offers only Bedrock and never asks PowerShell', async () => {
+      const { games } = make({ platform: 'linux', env, powershell: async () => { throw new Error('must not run'); } });
+      const st = await games.status();
+      expect(st).toMatchObject({ supported: true, os: 'linux', quickServer: false });
+      expect(st.games).toEqual([{ id: 'bedrock', via: 'direct', state: 'missing' }]);
+    });
+    it('starts the binary from PATH', async () => {
+      const { games, calls } = make({ platform: 'linux', env, files: ['/usr/bin/mcpelauncher-ui-qt'] });
+      expect((await games.status()).games[0]!.state).toBe('ready');
+      await games.launch('bedrock');
+      expect(calls.spawn).toEqual([['mcpelauncher-ui-qt', []]]);
+      expect(calls.uri).toEqual([]);
+    });
+    it('falls back to the Flatpak (system or user installation)', async () => {
+      for (const dir of ['/var/lib/flatpak/app/io.mrarm.mcpelauncher', '/home/u/.local/share/flatpak/app/io.mrarm.mcpelauncher']) {
+        const { games, calls } = make({ platform: 'linux', env, files: [dir] });
+        await games.launch('bedrock');
+        expect(calls.spawn).toEqual([['flatpak', ['run', 'io.mrarm.mcpelauncher']]]);
+      }
+    });
+    it('does not start anything when it is not installed, and a server is never put into a command line', async () => {
+      const { games, calls } = make({ platform: 'linux', env });
+      await expect(games.launch('bedrock')).rejects.toMatchObject({ code: 'MOJANG_NOT_FOUND' });
+      const b = make({ platform: 'linux', env, files: ['/usr/bin/mcpelauncher-ui-qt'] });
+      await b.games.launch('bedrock', { name: 'x', host: 'a.com&b', port: 19132 });
+      expect(b.calls.spawn).toEqual([['mcpelauncher-ui-qt', []]]);
+      expect(calls.spawn).toEqual([]);
+    });
+    it('Dungeons and Legends are refused; the install page is opened for Bedrock', async () => {
+      const { games, calls } = make({ platform: 'linux', env });
+      await expect(games.launch('dungeons')).rejects.toMatchObject({ code: 'MOJANG_UNSUPPORTED' });
+      await expect(games.openStore('legends')).rejects.toMatchObject({ code: 'MOJANG_UNSUPPORTED' });
+      await games.openStore('bedrock');
+      expect(calls.uri).toEqual(['https://minecraft-linux.github.io']);
+    });
+    const FLATPAK_DIR = '/home/u/.local/share/flatpak/app/io.mrarm.mcpelauncher';
+    const INSTALL = ['flatpak', ['install', '--user', '--noninteractive', '-y', 'flathub', 'io.mrarm.mcpelauncher']];
+
+    it('installs from Flathub for the current user and then finds the game', async () => {
+      const files: string[] = [];
+      const { games, calls } = make({
+        platform: 'linux', env, files,
+        run: async (f, a) => { calls_push(f, a); if (a[0] === 'install') files.push(FLATPAK_DIR); return ''; },
+      });
+      const seen: [string, string[]][] = [];
+      function calls_push(f: string, a: string[]) { seen.push([f, a]); }
+      await games.install('bedrock');
+      expect(seen.map(([, a]) => a[0])).toEqual(['--version', 'remote-add', 'install']);
+      expect(seen[1]![1]).toEqual(['remote-add', '--user', '--if-not-exists', 'flathub', 'https://dl.flathub.org/repo/flathub.flatpakrepo']);
+      expect(seen[2]).toEqual(INSTALL);
+      expect((await games.status()).games[0]!.state).toBe('ready');
+      expect(calls.run).toEqual([]);
+    });
+    it('does nothing when it is already installed', async () => {
+      const { games, calls } = make({ platform: 'linux', env, files: [FLATPAK_DIR] });
+      await games.install('bedrock');
+      expect(calls.run).toEqual([]);
+    });
+    it('explains what to do without Flatpak and does not try to install', async () => {
+      const seen: string[][] = [];
+      const { games } = make({ platform: 'linux', env, run: async (_f, a) => { seen.push(a); throw new Error('ENOENT'); } });
+      await expect(games.install('bedrock')).rejects.toMatchObject({ code: 'MOJANG_NO_FLATPAK' });
+      expect(seen).toEqual([['--version']]);
+    });
+    it('reports a failed installation, and a "successful" one that left nothing behind', async () => {
+      const a = make({ platform: 'linux', env, run: async (_f, args) => { if (args[0] === 'install') throw new Error('no network'); return ''; } });
+      await expect(a.games.install('bedrock')).rejects.toMatchObject({ code: 'MOJANG_INSTALL_FAILED', message: expect.stringContaining('no network') });
+      const b = make({ platform: 'linux', env });
+      await expect(b.games.install('bedrock')).rejects.toMatchObject({ code: 'MOJANG_INSTALL_FAILED' });
+    });
+    it('refuses a second installation while one is running, and allows a retry afterwards', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      const { games } = make({ platform: 'linux', env, run: async (_f, a) => { if (a[0] === 'install') await gate; return ''; } });
+      const first = games.install('bedrock').catch(() => undefined);
+      await new Promise((r) => setTimeout(r, 5));
+      await expect(games.install('bedrock')).rejects.toMatchObject({ code: 'MOJANG_BUSY' });
+      release();
+      await first;
+      await expect(games.install('bedrock')).rejects.toMatchObject({ code: 'MOJANG_INSTALL_FAILED' }); // not busy any more
+    });
+    it('only Bedrock, only on Linux', async () => {
+      await expect(make({ platform: 'linux', env }).games.install('legends')).rejects.toMatchObject({ code: 'MOJANG_UNSUPPORTED' });
+      const w = make();
+      await expect(w.games.install('bedrock')).rejects.toMatchObject({ code: 'MOJANG_UNSUPPORTED' });
+      expect(w.calls.run).toEqual([]);
+    });
+    it('ignores relative PATH entries', () => {
+      expect(linuxBedrockCandidates({ PATH: 'bin:/opt/x' }).map((c) => c.probe)).toEqual(['/opt/x/mcpelauncher-ui-qt', '/var/lib/flatpak/app/io.mrarm.mcpelauncher']);
+    });
   });
 
   it('reports what is installed', async () => {
@@ -79,7 +175,7 @@ describe('MojangGames', () => {
     const some = await make({ pkgs: [BEDROCK] }).games.status();
     expect(some.games.map((g) => `${g.id}:${g.state}:${g.via}`)).toEqual(['bedrock:ready:direct', 'dungeons:missing:launcher', 'legends:missing:launcher']);
     const all = await make({ pkgs: [BEDROCK, LAUNCHER] }).games.status();
-    expect(all).toMatchObject({ supported: true, launcherFound: true });
+    expect(all).toMatchObject({ supported: true, os: 'windows', quickServer: true, launcherFound: true });
     expect(all.games.every((g) => g.state === 'ready')).toBe(true);
   });
 

@@ -3,8 +3,24 @@ import type { SkinVariant } from '../../shared/skin';
 import type { SkinViewer3D as Viewer } from '../skinViewer3d';
 import { SkinPreview } from './SkinPreview';
 
-/** Turnable 3D model of a skin. Falls back to the flat picture when WebGL is not available. */
-export function SkinViewer3D({ dataUrl, variant, walk, label }: { dataUrl: string; variant: SkinVariant; walk: boolean; label: string }) {
+export type AccessoryMode = 'none' | 'cape' | 'elytra';
+
+/** Turnable 3D model of a skin (+ optional cape / elytra). Falls back to flat picture when WebGL is unavailable. */
+export function SkinViewer3D({
+  dataUrl,
+  variant,
+  walk,
+  label,
+  capeDataUrl,
+  accessoryMode = 'none',
+}: {
+  dataUrl: string;
+  variant: SkinVariant;
+  walk: boolean;
+  label: string;
+  capeDataUrl?: string | null;
+  accessoryMode?: AccessoryMode;
+}) {
   const ref = useRef<HTMLCanvasElement>(null);
   const viewer = useRef<Viewer | null>(null);
   const [failed, setFailed] = useState(false);
@@ -22,7 +38,6 @@ export function SkinViewer3D({ dataUrl, variant, walk, label }: { dataUrl: strin
         if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) { v.autoRotate = false; v.walk = false; }
         v.walk = walkRef.current && v.walk;
         viewer.current = v;
-        // a skin that was chosen while the module was loading
         window.dispatchEvent(new Event('chald:viewer-ready'));
       } catch { setFailed(true); }
     }).catch(() => setFailed(true));
@@ -42,6 +57,29 @@ export function SkinViewer3D({ dataUrl, variant, walk, label }: { dataUrl: strin
     window.addEventListener('chald:viewer-ready', apply);
     return () => { dead = true; window.removeEventListener('chald:viewer-ready', apply); };
   }, [dataUrl, variant]);
+
+  useEffect(() => {
+    let dead = false;
+    const apply = () => {
+      const v = viewer.current;
+      if (!v || dead) return;
+      if (!capeDataUrl) {
+        v.setCape(null);
+        v.setAccessoryMode('none');
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        if (dead || !viewer.current) return;
+        viewer.current.setCape(img);
+        viewer.current.setAccessoryMode(accessoryMode === 'none' ? 'cape' : accessoryMode);
+      };
+      img.src = capeDataUrl;
+    };
+    apply();
+    window.addEventListener('chald:viewer-ready', apply);
+    return () => { dead = true; window.removeEventListener('chald:viewer-ready', apply); };
+  }, [capeDataUrl, accessoryMode]);
 
   useEffect(() => { if (viewer.current) viewer.current.walk = walk; }, [walk]);
 

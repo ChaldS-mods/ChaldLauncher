@@ -3,11 +3,20 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const electron_1 = require("electron");
 // Sandboxed preload: only `electron` can be required here, so shared code is not imported at runtime.
 const CHANNEL_RE = /^[a-z]+:[a-zA-Z]+$/;
-const EVENT_RE = /^(op|game|auth):[a-zA-Z]+$/;
+const EVENT_RE = /^(op|game|auth|wardrobe|overlay):[a-zA-Z]+$/;
 electron_1.contextBridge.exposeInMainWorld('chald', {
     setZoom(factor) {
         if (Number.isFinite(factor))
             electron_1.webFrame.setZoomFactor(Math.min(1.3, Math.max(0.8, factor)));
+    },
+    /** Path of a file dropped onto the window (the renderer itself cannot see it). '' when it is not a file on disk. */
+    pathForFile(file) {
+        try {
+            return electron_1.webUtils.getPathForFile(file);
+        }
+        catch {
+            return '';
+        }
     },
     invoke(channel, arg) {
         if (!CHANNEL_RE.test(channel))

@@ -1,12 +1,20 @@
-import { contextBridge, ipcRenderer, webFrame, type IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer, webFrame, webUtils, type IpcRendererEvent } from 'electron';
 
 // Sandboxed preload: only `electron` can be required here, so shared code is not imported at runtime.
 const CHANNEL_RE = /^[a-z]+:[a-zA-Z]+$/;
-const EVENT_RE = /^(op|game|auth):[a-zA-Z]+$/;
+const EVENT_RE = /^(op|game|auth|wardrobe|overlay):[a-zA-Z]+$/;
 
 contextBridge.exposeInMainWorld('chald', {
   setZoom(factor: number): void {
     if (Number.isFinite(factor)) webFrame.setZoomFactor(Math.min(1.3, Math.max(0.8, factor)));
+  },
+  /** Path of a file dropped onto the window (the renderer itself cannot see it). '' when it is not a file on disk. */
+  pathForFile(file: File): string {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch {
+      return '';
+    }
   },
   invoke(channel: string, arg?: unknown): Promise<unknown> {
     if (!CHANNEL_RE.test(channel)) return Promise.reject(new Error('Недопустимый канал'));

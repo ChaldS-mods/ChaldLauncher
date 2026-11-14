@@ -10,6 +10,7 @@ import { ProgressBar } from './ui';
 
 export function TitleBar() {
   const auth = useStore((s) => s.auth);
+  const headUrl = useStore((s) => s.headUrl);
   const go = useStore((s) => s.go);
   const { t } = useI18n();
   const win = (a: 'minimize' | 'maximize' | 'close') => void call('window:control', a);
@@ -28,7 +29,9 @@ export function TitleBar() {
           onClick={() => go('settings')}
           title={auth?.mode === 'offline' ? t('auth.offlineHint') : t('auth.msHint')}
         >
-          <span className="profile__avatar"><Icon name="user" size={18} /></span>
+          <span className={`profile__avatar${headUrl ? ' profile__avatar--head' : ''}`}>
+            {headUrl ? <img src={headUrl} alt="" draggable={false} /> : <Icon name="user" size={18} />}
+          </span>
           <span className="profile__name">
             {auth?.loggedIn ? auth.name : auth?.mode === 'offline' ? t('auth.enterName') : t('auth.signIn')}
           </span>
@@ -60,6 +63,7 @@ export const NAV_PAGES: { page: Page; labelKey: string; icon: string }[] = [
   { page: 'mods', labelKey: 'nav.mods', icon: 'puzzle' },
   { page: 'resourcepacks', labelKey: 'nav.resourcepacks', icon: 'image' },
   { page: 'wardrobe', labelKey: 'nav.wardrobe', icon: 'shirt' },
+  { page: 'friends', labelKey: 'nav.friends', icon: 'user' },
   { page: 'modrinth', labelKey: 'nav.modrinth', icon: 'download' },
   { page: 'console', labelKey: 'nav.console', icon: 'terminal' },
   { page: 'mojang', labelKey: 'nav.mojang', icon: 'play' },

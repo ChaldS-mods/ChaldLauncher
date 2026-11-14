@@ -6,6 +6,7 @@ import { useStore } from '../store';
 import { Icon } from './Icon';
 import { Markdown } from './Markdown';
 import { Skeleton } from './ui';
+import { WorldPickerModal } from './WorldPickerModal';
 
 const TYPE_LABEL = { release: 'Release', beta: 'Beta', alpha: 'Alpha' } as const;
 
@@ -57,6 +58,7 @@ export function ModrinthProject({
   const [onlyCompat, setOnlyCompat] = useState(true);
   const [chosen, setChosen] = useState<string>('');
   const [busy, setBusy] = useState(false);
+  const [worldFor, setWorldFor] = useState<{ versionId: string | null } | null>(null);
 
   const isPack = hit.type === 'modpack';
   const mc = !isPack && onlyCompat ? filterMc : null;
@@ -106,7 +108,18 @@ export function ModrinthProject({
   const working = busy || packRunning;
   const disabled = working || (!isPack && installed) || (!isPack && (!inst || locked || vanillaMods));
 
-  const install = async (versionId: string | null) => {
+  const isDatapack = hit.type === 'datapack';
+
+  /** Для датапака сначала спрашиваем мир, остальное ставится сразу. */
+  const startInstall = (versionId: string | null) => {
+    if (isDatapack) {
+      setWorldFor({ versionId });
+      return;
+    }
+    void install(versionId, null);
+  };
+
+  const install = async (versionId: string | null, worldName: string | null) => {
     setBusy(true);
     try {
       if (isPack) {
@@ -116,8 +129,9 @@ export function ModrinthProject({
         await call('modrinth:install', {
           id: inst.id,
           projectId: hit.id,
-          kind: hit.type as 'mod' | 'resourcepack',
+          kind: hit.type as 'mod' | 'resourcepack' | 'shader' | 'datapack',
           versionId,
+          worldName: isDatapack ? worldName : null,
         });
         toast('ok', hit.title);
         void refreshInstances();
@@ -197,7 +211,7 @@ export function ModrinthProject({
           <button
             className={`btn ${isDone ? 'btn--done' : 'btn--primary'}`}
             disabled={disabled}
-            onClick={() => void install(chosen || null)}
+            onClick={() => startInstall(chosen || null)}
           >
             {label}
           </button>
@@ -312,7 +326,7 @@ export function ModrinthProject({
                   <button
                     className={`btn ${isDone ? 'btn--done' : 'btn--primary'}`}
                     disabled={disabled}
-                    onClick={() => void install(v.id)}
+                    onClick={() => startInstall(v.id)}
                   >
                     {working ? t('state.installing') : isDone ? t('modrinth.installed') : t('modrinth.install')}
                   </button>
@@ -321,6 +335,19 @@ export function ModrinthProject({
             </ul>
           )}
         </>
+      )}
+
+      {worldFor && inst && (
+        <WorldPickerModal
+          title={hit.title}
+          instanceId={inst.id}
+          onClose={() => setWorldFor(null)}
+          onConfirm={(world) => {
+            const v = worldFor.versionId;
+            setWorldFor(null);
+            void install(v, world);
+          }}
+        />
       )}
     </div>
   );

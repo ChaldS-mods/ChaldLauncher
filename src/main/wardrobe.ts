@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import type { AccountSkin, SkinEntry, SkinImportResult } from '../shared/types';
+import type { AccountCape, AccountSkin, CapeListResult, SkinEntry, SkinImportResult } from '../shared/types';
 import { isSlimSkin, isValidSkinSize, type SkinVariant } from '../shared/skin';
 import { AppError } from './errors';
 import { netRequest } from './net';
@@ -42,6 +42,30 @@ export function pickActiveSkin(profile: unknown): { url: string; variant: SkinVa
   return { url: s.url, variant: s.variant === 'SLIM' ? 'slim' : 'classic' };
 }
 
+interface ProfileCape {
+  id?: string;
+  state?: string;
+  url?: string;
+  alias?: string;
+}
+
+/** All official capes owned by the account (from profile.capes). */
+export function pickCapes(profile: unknown): { id: string; alias: string; url: string; state: 'ACTIVE' | 'INACTIVE' }[] {
+  const raw = (profile as { capes?: ProfileCape[] } | null)?.capes;
+  if (!Array.isArray(raw)) return [];
+  const out: { id: string; alias: string; url: string; state: 'ACTIVE' | 'INACTIVE' }[] = [];
+  for (const c of raw) {
+    if (typeof c?.id !== 'string' || typeof c?.url !== 'string') continue;
+    out.push({
+      id: c.id,
+      alias: (typeof c.alias === 'string' && c.alias.trim()) ? c.alias.trim() : c.id.slice(0, 8),
+      url: c.url,
+      state: c.state === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE',
+    });
+  }
+  return out;
+}
+
 /** Skin textures live on textures.minecraft.net (the profile returns an http:// link); we only ever fetch that host over https. */
 export function texturesUrl(raw: string): string {
   let u: URL;
@@ -52,22 +76,32 @@ export function texturesUrl(raw: string): string {
   return u.toString();
 }
 
-function apiError(status: number, text: string): AppError {
+function apiError(status: number, text: string, kind: 'skin' | 'cape' = 'skin'): AppError {
   let detail = '';
   try {
     const j = JSON.parse(text) as { errorMessage?: string; error?: string };
     detail = j.errorMessage ?? j.error ?? '';
   } catch { /* not json */ }
   if (status === 401 || status === 403) return new AppError('SKIN_AUTH', 'Mojang не принял сессию. Выйди и снова войди в аккаунт Microsoft.');
-  if (status === 429) return new AppError('SKIN_RATE', 'Mojang ограничивает частоту смены скина. Подожди минуту и попробуй снова.');
-  if (status === 400) return new AppError('SKIN_REJECTED', `Mojang не принял файл скина${detail ? `: ${detail}` : ''}.`);
-  return new AppError('SKIN_HTTP', `Не удалось сменить скин (HTTP ${status}${detail ? `: ${detail}` : ''}).`);
+  if (status === 429) return new AppError('SKIN_RATE', kind === 'cape'
+    ? 'Mojang ограничивает частоту смены плаща. Подожди минуту и попробуй снова.'
+    : 'Mojang ограничивает частоту смены скина. Подожди минуту и попробуй снова.');
+  if (status === 400) {
+    if (kind === 'cape') return new AppError('CAPE_REJECTED', `Mojang не принял плащ${detail ? `: ${detail}` : ''}. Возможно, аккаунт им не владеет.`);
+    return new AppError('SKIN_REJECTED', `Mojang не принял файл скина${detail ? `: ${detail}` : ''}.`);
+  }
+  return new AppError(kind === 'cape' ? 'CAPE_HTTP' : 'SKIN_HTTP',
+    kind === 'cape'
+      ? `Не удалось сменить плащ (HTTP ${status}${detail ? `: ${detail}` : ''}).`
+      : `Не удалось сменить скин (HTTP ${status}${detail ? `: ${detail}` : ''}).`);
 }
 
 export interface WardrobeOptions {
   /** Minecraft access token of the signed-in Microsoft account; throws when there is none. Never leaves the main process. */
   getToken: () => Promise<string>;
   apiBase?: string;
+  /** Called when a cape preview PNG has been downloaded (progressive UI). */
+  onCapePreview?: (id: string, dataUrl: string) => void;
 }
 
 export class WardrobeService {
@@ -244,5 +278,110 @@ export class WardrobeService {
     const text = await res.text();
     entry.bytes = Buffer.byteLength(text);
     if (!res.ok) throw apiError(res.status, text);
+  }
+
+  // ---- official account capes ----
+
+  private async loadCapePreview(url: string): Promise<string> {
+    const { res, entry } = await netRequest(texturesUrl(url), { purpose: 'Гардероб: превью плаща' });
+    if (!res.ok) throw new AppError('CAPE_HTTP', `Не удалось загрузить текстуру плаща (HTTP ${res.status})`);
+    const png = Buffer.from(await res.arrayBuffer());
+    entry.bytes = png.length;
+    if (png.length > 256 * 1024) throw new AppError('CAPE_HTTP', 'Текстура плаща слишком большая');
+    return dataUrl(png);
+  }
+
+  /** Generation counter so a newer listCapes() can ignore previews from an older one. */
+  private capePreviewGen = 0;
+
+  /**
+   * Downloads cape textures in the background (limited concurrency) and notifies the UI
+   * as each one finishes so the list can appear immediately and fill in progressively.
+   */
+  private loadCapePreviewsProgressive(capes: { id: string; url: string }[]): void {
+    const gen = ++this.capePreviewGen;
+    const notify = this.o.onCapePreview;
+    if (!notify || capes.length === 0) return;
+
+    const queue = [...capes];
+    const concurrency = 4;
+    let active = 0;
+
+    const pump = () => {
+      if (gen !== this.capePreviewGen) return; // superseded by a newer listCapes
+      while (active < concurrency && queue.length > 0) {
+        const item = queue.shift()!;
+        active += 1;
+        void this.loadCapePreview(item.url)
+          .then((dataUrlPng) => {
+            if (gen === this.capePreviewGen) notify(item.id, dataUrlPng);
+          })
+          .catch(() => { /* keep empty dataUrl; list item already shown */ })
+          .finally(() => {
+            active -= 1;
+            pump();
+          });
+      }
+    };
+    pump();
+  }
+
+  /**
+   * Lists all official capes the account owns (from licenses / profile).
+   * Returns the list immediately with empty previews; textures load in the background
+   * and are pushed to the UI via onCapePreview as they arrive.
+   */
+  async listCapes(): Promise<CapeListResult> {
+    const token = await this.o.getToken();
+    const profile = await this.fetchProfile(token);
+    const raw = pickCapes(profile);
+    const capes: AccountCape[] = raw.map((c) => ({
+      id: c.id,
+      alias: c.alias,
+      url: texturesUrl(c.url),
+      state: c.state,
+      dataUrl: '',
+    }));
+    const activeId = capes.find((c) => c.state === 'ACTIVE')?.id ?? null;
+
+    // Start progressive downloads without blocking the response.
+    this.loadCapePreviewsProgressive(capes.map((c) => ({ id: c.id, url: c.url })));
+
+    return { capes, activeId };
+  }
+
+  /** Equip an owned official cape. Returns the refreshed list. */
+  async equipCape(id: string): Promise<CapeListResult> {
+    if (!id || typeof id !== 'string') throw new AppError('CAPE_ID', 'Некорректный идентификатор плаща');
+    const token = await this.o.getToken();
+    const { res, entry } = await netRequest(`${this.api}/minecraft/profile/capes/active`, {
+      method: 'PUT',
+      purpose: 'Гардероб: надеть плащ',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ capeId: id }),
+    });
+    const text = await res.text();
+    entry.bytes = Buffer.byteLength(text);
+    if (!res.ok) throw apiError(res.status, text, 'cape');
+    // Re-fetch so UI gets consistent state + previews
+    return this.listCapes();
+  }
+
+  /** Remove any active cape (hide cape). Returns the refreshed list. */
+  async unequipCape(): Promise<CapeListResult> {
+    const token = await this.o.getToken();
+    const { res, entry } = await netRequest(`${this.api}/minecraft/profile/capes/active`, {
+      method: 'DELETE',
+      purpose: 'Гардероб: снять плащ',
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    });
+    const text = await res.text();
+    entry.bytes = Buffer.byteLength(text);
+    if (!res.ok) throw apiError(res.status, text, 'cape');
+    return this.listCapes();
   }
 }

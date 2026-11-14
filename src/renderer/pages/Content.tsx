@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
+import type { ArchiveAnalysis, ContentAddResult } from '../../shared/archive';
 import type { ContentEntry } from '../../shared/types';
 import { call, errMsg } from '../api';
+import { ArchiveDialog } from '../components/ArchiveDialog';
 import { Icon } from '../components/Icon';
 import { ConfirmModal, Empty, Skeleton, Switch } from '../components/ui';
 import { useI18n } from '../i18n';
@@ -25,6 +27,9 @@ export function ContentPage({ kind }: { kind: 'mods' | 'resourcepacks' }) {
   const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<ContentEntry | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<ArchiveAnalysis[]>([]);
+  const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
   const locked = !!inst && (inst.running || inst.state === 'installing');
   const id = inst?.id ?? null;
 
@@ -60,6 +65,63 @@ export function ContentPage({ kind }: { kind: 'mods' | 'resourcepacks' }) {
     }
   };
 
+  useEffect(() => setPending([]), [id]);
+
+  const reportAdd = (r: ContentAddResult) => {
+    if (r.imported > 0 || r.skipped > 0) {
+      toast(r.imported > 0 ? 'ok' : 'info', r.skipped > 0 ? t('archive.addedSkipped', { n: r.imported, s: r.skipped }) : t('archive.added', { n: r.imported }));
+    }
+    for (const m of r.errors) toast('error', m);
+  };
+
+  /** Mods page: .jar files and .zip archives, from the dialog (`paths` = null) or dropped on the page. */
+  const addMods = async (paths: string[] | null) => {
+    if (!inst) return;
+    setBusy(true);
+    try {
+      const r = await call('content:add', { id: inst.id, paths });
+      reportAdd(r);
+      if (r.pending.length) setPending((q) => [...q, ...r.pending]);
+      await load();
+      void refreshInstances();
+    } catch (e) {
+      toast('error', errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const hasFiles = (e: DragEvent) => isMods && e.dataTransfer.types.includes('Files');
+  const onDragEnter = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth.current++;
+    setDragging(true);
+  };
+  const onDragOver = (e: DragEvent) => {
+    if (hasFiles(e)) e.preventDefault(); // without this the window would open the dropped file
+  };
+  const onDragLeave = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragging(false);
+  };
+  const onDrop = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDragging(false);
+    if (locked || busy || !inst) return;
+    const paths = Array.from(e.dataTransfer.files)
+      .map((f) => window.chald.pathForFile?.(f) ?? '')
+      .filter(Boolean);
+    if (!paths.length) {
+      toast('error', t('archive.noPath'));
+      return;
+    }
+    void addMods(paths);
+  };
+
   if (!inst) {
     return (
       <div className="page">
@@ -79,7 +141,7 @@ export function ContentPage({ kind }: { kind: 'mods' | 'resourcepacks' }) {
   const modsUnsupported = isMods && inst.loader.type === 'vanilla';
 
   return (
-    <div className="page">
+    <div className="page" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <header className="page-head">
         <div className="page-head__title">
           <Icon name={icon} size={40} />
@@ -105,16 +167,19 @@ export function ContentPage({ kind }: { kind: 'mods' | 'resourcepacks' }) {
           className="btn btn--primary"
           disabled={busy || locked}
           onClick={() =>
-            void run(async () => {
-              const n = await call('content:import', { id: inst.id, kind });
-              if (n > 0) toast('ok', String(n));
-            })
+            isMods
+              ? void addMods(null)
+              : void run(async () => {
+                  const n = await call('content:import', { id: inst.id, kind });
+                  if (n > 0) toast('ok', String(n));
+                })
           }
         >
           <Icon name="plus" size={18} /> {addLabel}
         </button>
       </header>
 
+      {isMods && !locked && <p className="muted">{t('archive.hint')}</p>}
       {locked && (
         <p className="notice">
           <Icon name="alert" size={16} /> {inst.running ? t('status.running') : t('state.installing')}
@@ -164,7 +229,7 @@ export function ContentPage({ kind }: { kind: 'mods' | 'resourcepacks' }) {
                 label={it.name}
                 onChange={(v) =>
                   void run(async () => {
-                    await call('content:toggle', { id: inst.id, kind, file: it.file, enabled: v });
+                    await call('content:toggle', { id: inst.id, kind, file: it.file });
                   })
                 }
               />
@@ -189,7 +254,7 @@ export function ContentPage({ kind }: { kind: 'mods' | 'resourcepacks' }) {
           busy={busy}
           onConfirm={() =>
             void run(async () => {
-              await call('content:remove', { id: inst.id, kind, file: confirm.file });
+              await call('content:remove', { id: inst.id, kind, file: confirm.file, confirm: true });
               setConfirm(null);
             })
           }
@@ -199,6 +264,27 @@ export function ContentPage({ kind }: { kind: 'mods' | 'resourcepacks' }) {
             <strong>{confirm.name}</strong>
           </p>
         </ConfirmModal>
+      )}
+      {dragging && !locked && (
+        <div className="drop-overlay" aria-hidden="true">
+          <Icon name="download" size={48} />
+          <strong>{t('archive.dropHint')}</strong>
+        </div>
+      )}
+      {pending[0] && inst && (
+        <ArchiveDialog
+          key={pending[0].token}
+          analysis={pending[0]}
+          instanceId={inst.id}
+          onClose={(r) => {
+            setPending((q) => q.slice(1));
+            if (r) {
+              toast('ok', t('archive.done', { mods: r.mods, other: r.other, skipped: r.skipped }));
+              void load();
+              void refreshInstances();
+            }
+          }}
+        />
       )}
     </div>
   );

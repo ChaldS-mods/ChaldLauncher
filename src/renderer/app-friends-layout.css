@@ -1,0 +1,12 @@
+/* When Friends page is open, don't scroll the whole main — only inner chat panes */
+.main:has(.page--friends) {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.main:has(.page--friends) > .page--friends {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  max-height: 100%;
+}

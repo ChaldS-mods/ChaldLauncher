@@ -3,8 +3,9 @@ import type {
   AppInfo, AppSettings, AuthState, DeviceCodeInfo, InstanceView, ModrinthType, OpProgress, UpdateInfo,
 } from '../shared/types';
 import { ApiError, call, errMsg, on } from './api';
+import { headFromSkin } from './skinHead';
 
-export type Page = 'home' | 'instances' | 'versions' | 'mods' | 'resourcepacks' | 'wardrobe' | 'modrinth' | 'console' | 'mojang' | 'settings';
+export type Page = 'home' | 'instances' | 'versions' | 'mods' | 'resourcepacks' | 'wardrobe' | 'friends' | 'modrinth' | 'console' | 'mojang' | 'settings';
 export interface Toast { id: number; kind: 'ok' | 'error' | 'info'; text: string }
 
 interface State {
@@ -20,6 +21,10 @@ interface State {
   ops: Record<string, OpProgress>;
   logs: Record<string, string[]>;
   auth: AuthState | null;
+  /** the account's head (face + second layer) as a PNG data URL, for the title bar; null = show the icon */
+  headUrl: string | null;
+  refreshHead(): Promise<void>;
+  setHeadFromSkin(skinDataUrl: string): Promise<void>;
   deviceCode: DeviceCodeInfo | null;
   update: UpdateInfo | null;
   sysMemory: { totalMb: number; freeMb: number } | null;
@@ -50,6 +55,7 @@ interface State {
   selected(): InstanceView | null;
 }
 
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 let toastId = 0;
 let initialized = false;
 
@@ -66,6 +72,7 @@ export const useStore = create<State>((set, get) => ({
   ops: {},
   logs: {},
   auth: null,
+  headUrl: null,
   deviceCode: null,
   loginWait: null,
   update: null,
@@ -79,6 +86,7 @@ export const useStore = create<State>((set, get) => ({
     try {
       const [info, settings, auth] = await Promise.all([call('app:info'), call('settings:get'), call('auth:state')]);
       set({ info, settings, auth, selectedId: settings.lastInstanceId });
+      void get().refreshHead();
       await get().refreshInstances();
       const { instances, selectedId } = get();
       if (!instances.some((i) => i.id === selectedId)) set({ selectedId: instances[0]?.id ?? null });
@@ -131,11 +139,16 @@ export const useStore = create<State>((set, get) => ({
     });
     on('auth:changed', (a) => {
       set({ auth: a, deviceCode: null });
+      void get().refreshHead();
       void call('settings:get').then((settings) => set({ settings })).catch(() => undefined);
     });
     on('auth:deviceCode', (c) => set({ deviceCode: c }));
 
     if (get().settings?.checkUpdates) void get().checkUpdate();
+    // a launcher that stays open for days still finds new versions (one small GitHub request per interval)
+    setInterval(() => {
+      if (get().settings?.checkUpdates && !get().update?.downloading) void get().checkUpdate();
+    }, UPDATE_CHECK_INTERVAL_MS);
   },
 
   go(page, opts) {
@@ -164,6 +177,41 @@ export const useStore = create<State>((set, get) => ({
     return next;
   },
 
+  async refreshHead() {
+    const a = get().auth;
+    if (!a?.loggedIn || a.mode !== 'microsoft') {
+      set({ headUrl: null }); // offline mode has no skin to show
+      return;
+    }
+    const key = `chald.head.${a.uuid ?? a.name ?? ''}`;
+    if (!get().headUrl) {
+      // the last known head appears at once, the fresh one replaces it when it arrives
+      try { const c = localStorage.getItem(key); if (c) set({ headUrl: c }); } catch { /* storage unavailable */ }
+    }
+    try {
+      const skin = await call('wardrobe:current');
+      if (!skin) {
+        // a successful answer without a skin: the account has none of its own, show the icon again
+        set({ headUrl: null });
+        try { localStorage.removeItem(key); } catch { /* storage unavailable */ }
+        return;
+      }
+      const url = await headFromSkin(skin.dataUrl);
+      if (get().auth?.uuid !== a.uuid) return; // another account was selected meanwhile
+      set({ headUrl: url });
+      try { localStorage.setItem(key, url); } catch { /* storage unavailable */ }
+    } catch {
+      /* no network or no skin: keep the previous head or the icon */
+    }
+  },
+  async setHeadFromSkin(skinDataUrl) {
+    const a = get().auth;
+    try {
+      const url = await headFromSkin(skinDataUrl);
+      set({ headUrl: url });
+      try { localStorage.setItem(`chald.head.${a?.uuid ?? a?.name ?? ''}`, url); } catch { /* storage unavailable */ }
+    } catch { /* keep the previous head */ }
+  },
   toast(kind, text) {
     const id = ++toastId;
     set((s) => ({ toasts: [...s.toasts, { id, kind, text }].slice(-4) }));

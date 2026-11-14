@@ -40,16 +40,20 @@ const path = __importStar(require("node:path"));
 const electron_1 = require("electron");
 const zod_1 = require("zod");
 const schemas_1 = require("../shared/schemas");
+const node_crypto_1 = require("node:crypto");
+const archiveImport_1 = require("./archiveImport");
 const content_1 = require("./content");
 const errors_1 = require("./errors");
 const java_1 = require("./java");
 const memory_1 = require("./memory");
 const modrinth_1 = require("./modrinth");
+const launcherImport_1 = require("./launcherImport");
 const dns_1 = require("./dns");
 const mojangGames_1 = require("./mojangGames");
 const net_1 = require("./net");
 const config_1 = require("./config");
 const updater_1 = require("./updater");
+const selfUpdate_1 = require("./selfUpdate");
 const versions_1 = require("./versions");
 const idArg = zod_1.z.object({ id: schemas_1.instanceIdSchema });
 const kindArg = zod_1.z.enum(['mods', 'resourcepacks']);
@@ -58,7 +62,12 @@ function isTrusted(e, trustedOrigins) {
     const url = e.senderFrame?.url ?? '';
     return trustedOrigins.some((o) => url.startsWith(o));
 }
-function registerIpc(s, trustedOrigins) {
+/** Login = Chald ID: 3–20 chars, Latin letters, digits and "_"; a leading "@" typed by habit is dropped. */
+const chaldLoginSchema = zod_1.z
+    .string()
+    .transform((v) => v.trim().replace(/^@/, ''))
+    .pipe(zod_1.z.string().regex(/^[A-Za-z0-9_]{3,20}$/, 'Логин (он же Chald ID): 3–20 символов, латиница, цифры и «_»'));
+function registerIpc(s, trustedOrigins, extra) {
     function handle(channel, fn) {
         electron_1.ipcMain.handle(channel, async (e, arg) => {
             if (!isTrusted(e, trustedOrigins))
@@ -182,6 +191,7 @@ function registerIpc(s, trustedOrigins) {
     });
     handle('instances:install', (arg) => s.startInstall(idArg.parse(arg).id));
     handle('instances:cancelInstall', (arg) => s.cancelInstall(idArg.parse(arg).id));
+    handle('instances:changeVersion', (arg) => s.startVersionChange(schemas_1.changeVersionSchema.parse(arg)));
     handle('instances:select', async (arg) => {
         const { id } = zod_1.z.object({ id: schemas_1.instanceIdSchema.nullable() }).parse(arg);
         await s.settings.set({ lastInstanceId: id });
@@ -225,6 +235,96 @@ function registerIpc(s, trustedOrigins) {
             return 0;
         return (0, content_1.importContent)((await gameDirOf(id)).gameDir, kind, r.filePaths);
     });
+    /** archives that need the user's decision: token -> instance + file (the file is read again when they decide) */
+    const pendingArchives = new Map();
+    handle('content:add', async (arg, e) => {
+        const { id, paths } = zod_1.z.object({ id: schemas_1.instanceIdSchema, paths: zod_1.z.array(zod_1.z.string().min(1).max(4096)).max(500).nullable() }).parse(arg);
+        if (s.games.activeIds().has(id))
+            throw new errors_1.AppError('BUSY', 'Останови игру, чтобы менять файлы');
+        const out = { imported: 0, skipped: 0, pending: [], errors: [] };
+        let files = paths;
+        if (!files) {
+            const w = winOf(e);
+            const opts = {
+                title: 'Добавить моды',
+                properties: ['openFile', 'multiSelections'],
+                filters: [{ name: 'Моды (.jar) и архивы (.zip)', extensions: ['jar', 'zip'] }],
+            };
+            const r = w ? await electron_1.dialog.showOpenDialog(w, opts) : await electron_1.dialog.showOpenDialog(opts);
+            if (r.canceled)
+                return out;
+            files = r.filePaths;
+        }
+        const { gameDir } = await gameDirOf(id);
+        const why = (err) => (err instanceof Error ? err.message : String(err));
+        const jars = [];
+        for (const f of files) {
+            const name = path.basename(f);
+            const ext = path.extname(f).toLowerCase();
+            if (!path.isAbsolute(f)) {
+                out.errors.push(`«${name}»: не удалось определить путь к файлу`);
+            }
+            else if (ext === '.jar') {
+                jars.push(f);
+            }
+            else if (ext === '.zip') {
+                try {
+                    const { zip, plan } = await (0, archiveImport_1.planArchive)(f);
+                    if (plan.kind === 'modpack') {
+                        out.errors.push(`«${name}»: это сборка, а не набор модов. Установи её на странице Modrinth или CurseForge, либо через «Импорт» на странице инстансов.`);
+                    }
+                    else if (plan.kind === 'empty') {
+                        out.errors.push(`«${name}»: в архиве нет ни модов, ни других нужных файлов`);
+                    }
+                    else if (plan.kind === 'mods') {
+                        const r = await (0, archiveImport_1.applyPlan)(zip, plan, gameDir, 'mods');
+                        out.imported += r.mods;
+                        out.skipped += r.skipped;
+                    }
+                    else {
+                        const token = (0, node_crypto_1.randomBytes)(8).toString('hex');
+                        pendingArchives.set(token, { id, file: f });
+                        if (pendingArchives.size > 50)
+                            pendingArchives.delete(pendingArchives.keys().next().value);
+                        const a = { token, name, mods: plan.mods, modBytes: plan.modBytes, groups: plan.groups, ignored: plan.ignored };
+                        out.pending.push(a);
+                    }
+                }
+                catch (err) {
+                    out.errors.push(`«${name}»: ${why(err)}`);
+                }
+            }
+            else {
+                out.errors.push(`«${name}»: поддерживаются файлы .jar и архивы .zip (для .rar и .7z сначала распакуй файлы)`);
+            }
+        }
+        if (jars.length) {
+            try {
+                const r = await (0, archiveImport_1.importJars)(gameDir, jars);
+                out.imported += r.imported;
+                out.skipped += r.skipped;
+            }
+            catch (err) {
+                out.errors.push(why(err));
+            }
+        }
+        return out;
+    });
+    handle('content:applyArchive', async (arg) => {
+        const { id, token, mode } = zod_1.z.object({ id: schemas_1.instanceIdSchema, token: zod_1.z.string().regex(/^[a-f0-9]{16}$/), mode: zod_1.z.enum(['mods', 'all']) }).parse(arg);
+        if (s.games.activeIds().has(id))
+            throw new errors_1.AppError('BUSY', 'Останови игру, чтобы менять файлы');
+        const p = pendingArchives.get(token);
+        if (!p || p.id !== id)
+            throw new errors_1.AppError('ARCHIVE_EXPIRED', 'Список устарел. Добавь архив заново.');
+        pendingArchives.delete(token);
+        const { gameDir } = await gameDirOf(id);
+        const { zip, plan } = await (0, archiveImport_1.planArchive)(p.file); // read again: the file may have changed since the question was asked
+        if (plan.kind === 'modpack' || plan.kind === 'empty')
+            throw new errors_1.AppError('ARCHIVE_CHANGED', 'Содержимое архива изменилось. Добавь его заново.');
+        return (0, archiveImport_1.applyPlan)(zip, plan, gameDir, mode);
+    });
+    handle('instances:worlds', (arg) => s.listWorlds(zod_1.z.object({ id: schemas_1.instanceIdSchema }).parse(arg).id));
     handle('modrinth:search', (arg) => s.modrinth.search(schemas_1.modrinthSearchSchema.parse(arg)));
     handle('modrinth:project', (arg) => s.modrinth.projectInfo(zod_1.z.object({ projectId: schemas_1.modrinthIdSchema }).parse(arg).projectId));
     handle('modrinth:versions', (arg) => {
@@ -236,13 +336,14 @@ function registerIpc(s, trustedOrigins) {
         s.openModrinthPage(type, slug);
     });
     handle('modrinth:install', (arg) => {
-        const { id, projectId, kind, versionId } = zod_1.z.object({
-            id: schemas_1.instanceIdSchema, projectId: schemas_1.modrinthIdSchema, kind: zod_1.z.enum(['mod', 'resourcepack']), versionId: schemas_1.modrinthIdSchema.nullish(),
+        const { id, projectId, kind, versionId, worldName } = zod_1.z.object({
+            id: schemas_1.instanceIdSchema, projectId: schemas_1.modrinthIdSchema, kind: zod_1.z.enum(['mod', 'resourcepack', 'shader', 'datapack']), versionId: schemas_1.modrinthIdSchema.nullish(),
+            worldName: zod_1.z.string().min(1).max(128).nullish(),
         }).parse(arg);
-        return s.installFromModrinth(id, projectId, kind, versionId ?? null);
+        return s.installFromModrinth(id, projectId, kind, versionId ?? null, worldName ?? null);
     });
     handle('modrinth:installed', async (arg) => {
-        const { id, kind } = zod_1.z.object({ id: schemas_1.instanceIdSchema, kind: zod_1.z.enum(['mod', 'resourcepack']) }).parse(arg);
+        const { id, kind } = zod_1.z.object({ id: schemas_1.instanceIdSchema, kind: zod_1.z.enum(['mod', 'resourcepack', 'shader', 'datapack']) }).parse(arg);
         return (0, modrinth_1.listInstalledProjects)((await gameDirOf(id)).gameDir, kind);
     });
     handle('chaldpack:inspect', async (_arg, e) => {
@@ -265,11 +366,80 @@ function registerIpc(s, trustedOrigins) {
         const file = r.filePath.toLowerCase().endsWith('.chaldlauncher') ? r.filePath : `${r.filePath}.chaldlauncher`;
         return { ...(await s.exportChaldPack(id, file, includeWorlds)), file };
     });
+    handle('launchers:detect', () => {
+        const safe = (name) => {
+            try {
+                return electron_1.app.getPath(name);
+            }
+            catch {
+                return undefined;
+            }
+        };
+        const home = safe('home');
+        const appData = safe('appData');
+        const documents = safe('documents');
+        return s.detectLaunchers((0, launcherImport_1.defaultEnv)({ ...(home ? { home } : {}), ...(appData ? { appData } : {}), ...(documents ? { documents } : {}) }));
+    });
+    handle('launchers:pickFolder', async (_arg, e) => {
+        const w = winOf(e);
+        const opts = { title: 'Папка лаунчера или инстанса', properties: ['openDirectory'] };
+        const r = w ? await electron_1.dialog.showOpenDialog(w, opts) : await electron_1.dialog.showOpenDialog(opts);
+        if (r.canceled || !r.filePaths[0])
+            return null;
+        return s.sourceFromFolder(r.filePaths[0]);
+    });
+    handle('launchers:import', (arg) => s.startLauncherImport(zod_1.z.object({ tokens: zod_1.z.array(zod_1.z.string().regex(/^[a-f0-9]{16}$/)).min(1).max(200) }).parse(arg).tokens));
+    handle('launchers:cancel', (arg) => s.cancelLauncherImport(zod_1.z.object({ batch: zod_1.z.string().regex(/^[a-f0-9]{12}$/) }).parse(arg).batch));
     handle('modrinth:installPack', (arg) => {
         const { projectId, versionId } = zod_1.z.object({ projectId: schemas_1.modrinthIdSchema, versionId: schemas_1.modrinthIdSchema.nullish() }).parse(arg);
         return s.startModpack(projectId, versionId ?? null);
     });
     handle('modrinth:cancelPack', (arg) => s.cancelModpack(zod_1.z.object({ projectId: schemas_1.modrinthIdSchema }).parse(arg).projectId));
+    handle('curseforge:search', (arg) => {
+        const q = zod_1.z.object({
+            query: zod_1.z.string().max(200).default(''),
+            classType: zod_1.z.enum(['mod', 'modpack', 'resourcepack', 'shader', 'datapack']).default('mod'),
+            mcVersion: zod_1.z.string().max(40).nullable().default(null),
+            loader: zod_1.z.enum(['fabric', 'quilt', 'forge', 'neoforge']).nullable().default(null),
+            sort: zod_1.z.enum(['featured', 'popularity', 'lastUpdated', 'name', 'totalDownloads']).default('popularity'),
+            offset: zod_1.z.number().int().min(0).max(10_000).default(0),
+        }).parse(arg);
+        return s.curseforge.search(q);
+    });
+    handle('curseforge:project', (arg) => s.curseforge.getMod(zod_1.z.object({ modId: zod_1.z.number().int().positive() }).parse(arg).modId));
+    handle('curseforge:files', (arg) => {
+        const q = zod_1.z.object({
+            modId: zod_1.z.number().int().positive(),
+            mcVersion: zod_1.z.string().max(40).nullable().default(null),
+            loader: zod_1.z.enum(['fabric', 'quilt', 'forge', 'neoforge']).nullable().default(null),
+        }).parse(arg);
+        return s.curseforge.files(q.modId, { mcVersion: q.mcVersion, loader: q.loader, pageSize: 50 });
+    });
+    handle('curseforge:install', (arg) => {
+        const { id, modId, kind, fileId, worldName } = zod_1.z.object({
+            id: schemas_1.instanceIdSchema,
+            modId: zod_1.z.number().int().positive(),
+            kind: zod_1.z.enum(['mod', 'resourcepack', 'shader', 'datapack']),
+            fileId: zod_1.z.number().int().positive().nullish(),
+            worldName: zod_1.z.string().min(1).max(128).nullish(),
+        }).parse(arg);
+        return s.installFromCurseForge(id, modId, kind, fileId ?? null, worldName ?? null);
+    });
+    handle('curseforge:installPack', (arg) => {
+        const { modId, fileId } = zod_1.z.object({
+            modId: zod_1.z.number().int().positive(),
+            fileId: zod_1.z.number().int().positive().nullish(),
+        }).parse(arg);
+        s.startCfModpack(modId, fileId ?? null);
+    });
+    handle('curseforge:installed', (arg) => {
+        const { id, kind } = zod_1.z.object({ id: schemas_1.instanceIdSchema, kind: zod_1.z.enum(['mod', 'resourcepack', 'shader', 'datapack']) }).parse(arg);
+        return s.listCurseForgeInstalled(id, kind);
+    });
+    handle('curseforge:openPage', (arg) => {
+        const { slug } = zod_1.z.object({ slug: zod_1.z.string().min(1).max(128) }).parse(arg);
+        s.openCurseForgePage(slug);
+    });
     const skinId = zod_1.z.string().regex(/^[a-f0-9]{12}$/, 'Некорректный идентификатор скина');
     const skinName = zod_1.z.string().trim().min(1, 'Введи название скина').max(32, 'Не длиннее 32 символов');
     handle('wardrobe:list', () => s.wardrobe.list());
@@ -297,6 +467,215 @@ function registerIpc(s, trustedOrigins) {
     });
     handle('wardrobe:apply', (arg) => s.wardrobe.apply(zod_1.z.object({ id: skinId }).parse(arg).id));
     handle('wardrobe:reset', () => s.wardrobe.reset());
+    handle('wardrobe:listCapes', () => s.wardrobe.listCapes());
+    handle('wardrobe:equipCape', (arg) => {
+        const { id } = zod_1.z.object({ id: zod_1.z.string().min(1).max(64) }).parse(arg);
+        return s.wardrobe.equipCape(id);
+    });
+    handle('wardrobe:unequipCape', () => s.wardrobe.unequipCape());
+    handle('friends:hasSession', () => s.friends.hasToken());
+    handle('friends:uploadAvatar', async (arg) => {
+        const { dataUrl } = zod_1.z.object({ dataUrl: zod_1.z.string().min(32).max(200_000) }).parse(arg);
+        if (!dataUrl.startsWith('data:image/png'))
+            throw new errors_1.AppError('AVATAR_TYPE', 'Нужен PNG');
+        await s.friends.uploadAvatar(dataUrl);
+        return true;
+    });
+    handle('friends:avatarData', async (arg) => {
+        const { userId } = zod_1.z.object({ userId: zod_1.z.number().int().positive() }).parse(arg);
+        return s.friends.fetchAvatarDataUrl(userId);
+    });
+    handle('friends:register', async (arg) => {
+        // the login IS the Chald ID, and it is bound to the account nickname (Microsoft or offline): the client sends only a password
+        const body = zod_1.z.object({ password: zod_1.z.string().min(6).max(72) }).parse(arg ?? {});
+        const st = await s.auth.state();
+        if (!st.loggedIn || !st.uuid || !st.name) {
+            throw new errors_1.AppError('FRIENDS_AUTH', 'Сначала укажи offline-ник или войди через Microsoft.');
+        }
+        const login = chaldLoginSchema.safeParse(st.name);
+        if (!login.success) {
+            throw new errors_1.AppError('FRIENDS_AUTH', 'Ник должен быть из 3–20 символов (латиница, цифры, «_»), чтобы стать Chald ID.');
+        }
+        return s.friends.registerAccount(login.data, body.password, st.uuid, st.name);
+    });
+    handle('friends:login', async (arg) => {
+        const body = zod_1.z.object({
+            login: chaldLoginSchema,
+            password: zod_1.z.string().min(6).max(72),
+        }).parse(arg ?? {});
+        return s.friends.loginAccount(body.login, body.password);
+    });
+    handle('friends:session', async (arg) => {
+        const { chaldId } = zod_1.z.object({ chaldId: zod_1.z.string().min(3).max(20).nullable().optional() }).parse(arg ?? {});
+        const st = await s.auth.state();
+        if (!st.loggedIn || !st.uuid || !st.name) {
+            throw new errors_1.AppError('FRIENDS_AUTH', st.mode === 'offline'
+                ? 'Укажи ник в настройках аккаунта (режим Offline), затем зарегистрируй Chald ID.'
+                : 'Войди через Microsoft или включи offline-ник, чтобы зарегистрировать Chald ID.');
+        }
+        return s.friends.session(st.uuid, st.name, chaldId ?? null);
+    });
+    handle('friends:legacyReset', () => s.consumeFriendsLegacyReset());
+    handle('friends:logout', () => { s.friends.clearSession(); return true; });
+    handle('friends:me', () => s.friends.me());
+    handle('friends:updateMe', (arg) => {
+        const patch = zod_1.z.object({
+            displayName: zod_1.z.string().min(1).max(32).optional(),
+            bio: zod_1.z.string().max(200).optional(),
+            chaldId: zod_1.z.string().min(3).max(20).optional(),
+        }).parse(arg ?? {});
+        return s.friends.updateMe(patch);
+    });
+    handle('friends:search', (arg) => {
+        const { q } = zod_1.z.object({ q: zod_1.z.string().min(1).max(32) }).parse(arg);
+        return s.friends.search(q);
+    });
+    handle('friends:list', () => s.friends.list());
+    handle('friends:request', (arg) => {
+        const body = zod_1.z.object({
+            toChaldId: zod_1.z.string().min(1).max(20).optional(),
+            toMcName: zod_1.z.string().min(1).max(16).optional(),
+            toUserId: zod_1.z.number().int().positive().optional(),
+        }).parse(arg ?? {});
+        return s.friends.requestFriend(body);
+    });
+    handle('friends:accept', (arg) => {
+        const { requestId } = zod_1.z.object({ requestId: zod_1.z.number().int().positive() }).parse(arg);
+        return s.friends.accept(requestId);
+    });
+    handle('friends:reject', (arg) => {
+        const { requestId } = zod_1.z.object({ requestId: zod_1.z.number().int().positive() }).parse(arg);
+        return s.friends.reject(requestId);
+    });
+    handle('friends:remove', (arg) => {
+        const { userId } = zod_1.z.object({ userId: zod_1.z.number().int().positive() }).parse(arg);
+        return s.friends.remove(userId);
+    });
+    handle('friends:inbox', () => s.friends.inbox());
+    handle('friends:thread', (arg) => {
+        const { peerId, afterId } = zod_1.z.object({
+            peerId: zod_1.z.number().int().positive(),
+            afterId: zod_1.z.number().int().nonnegative().optional(),
+        }).parse(arg);
+        return s.friends.thread(peerId, afterId ?? 0);
+    });
+    handle('friends:send', (arg) => {
+        const body = zod_1.z.object({
+            toUserId: zod_1.z.number().int().positive(),
+            body: zod_1.z.string().min(1).max(450_000),
+            kind: zod_1.z.enum(['text', 'image', 'share']).optional(),
+            meta: zod_1.z.union([zod_1.z.string(), zod_1.z.record(zod_1.z.string(), zod_1.z.unknown())]).optional(),
+        }).parse(arg);
+        return s.friends.sendMessage(body.toUserId, body.body, body.kind ?? 'text', body.meta);
+    });
+    handle('friends:invite', (arg) => {
+        const body = zod_1.z.object({
+            toUserId: zod_1.z.number().int().positive(),
+            instanceName: zod_1.z.string().max(64),
+            address: zod_1.z.string().max(128).optional(),
+            note: zod_1.z.string().max(200).optional(),
+        }).parse(arg);
+        return s.friends.sendInvite(body.toUserId, body.instanceName, body.address ?? '', body.note ?? '');
+    });
+    handle('friends:invites', () => s.friends.listInvites());
+    handle('friends:inviteAccept', (arg) => {
+        const { inviteId } = zod_1.z.object({ inviteId: zod_1.z.number().int().positive() }).parse(arg);
+        return s.friends.acceptInvite(inviteId);
+    });
+    handle('friends:inviteDecline', (arg) => {
+        const { inviteId } = zod_1.z.object({ inviteId: zod_1.z.number().int().positive() }).parse(arg);
+        return s.friends.declineInvite(inviteId);
+    });
+    handle('friends:callSignal', (arg) => {
+        const body = zod_1.z.object({
+            toUserId: zod_1.z.number().int().positive(),
+            kind: zod_1.z.enum(['offer', 'answer', 'ice', 'hangup', 'ring']),
+            payload: zod_1.z.string().max(16000),
+            groupId: zod_1.z.number().int().positive().nullable().optional(),
+        }).parse(arg);
+        return s.friends.sendCallSignal(body.toUserId, body.kind, body.payload, body.groupId);
+    });
+    handle('friends:callPoll', () => s.friends.pollCallSignals());
+    handle('friends:groups', () => s.friends.listGroups());
+    handle('friends:groupCreate', (arg) => {
+        const body = zod_1.z.object({
+            name: zod_1.z.string().trim().min(1).max(64),
+            memberIds: zod_1.z.array(zod_1.z.number().int().positive()).max(32).optional(),
+        }).parse(arg);
+        return s.friends.createGroup(body.name, body.memberIds ?? []);
+    });
+    handle('friends:groupGet', (arg) => {
+        const { groupId } = zod_1.z.object({ groupId: zod_1.z.number().int().positive() }).parse(arg);
+        return s.friends.getGroup(groupId);
+    });
+    handle('friends:groupAddMember', (arg) => {
+        const body = zod_1.z.object({
+            groupId: zod_1.z.number().int().positive(),
+            userId: zod_1.z.number().int().positive(),
+        }).parse(arg);
+        return s.friends.addGroupMember(body.groupId, body.userId);
+    });
+    handle('friends:groupRemoveMember', (arg) => {
+        const body = zod_1.z.object({
+            groupId: zod_1.z.number().int().positive(),
+            userId: zod_1.z.number().int().positive(),
+        }).parse(arg);
+        return s.friends.removeGroupMember(body.groupId, body.userId);
+    });
+    handle('friends:groupUpdate', (arg) => {
+        const body = zod_1.z.object({
+            groupId: zod_1.z.number().int().positive(),
+            name: zod_1.z.string().trim().min(1).max(64),
+        }).parse(arg);
+        return s.friends.updateGroup(body.groupId, body.name);
+    });
+    handle('friends:groupDelete', (arg) => {
+        const { groupId } = zod_1.z.object({ groupId: zod_1.z.number().int().positive() }).parse(arg);
+        return s.friends.deleteGroup(groupId);
+    });
+    handle('friends:groupThread', (arg) => {
+        const body = zod_1.z.object({
+            groupId: zod_1.z.number().int().positive(),
+            afterId: zod_1.z.number().int().nonnegative().optional(),
+        }).parse(arg);
+        return s.friends.groupThread(body.groupId, body.afterId ?? 0);
+    });
+    handle('friends:groupSend', (arg) => {
+        const body = zod_1.z.object({
+            groupId: zod_1.z.number().int().positive(),
+            body: zod_1.z.string().min(1).max(450_000),
+            kind: zod_1.z.enum(['text', 'image', 'share']).optional(),
+            meta: zod_1.z.union([zod_1.z.string(), zod_1.z.record(zod_1.z.string(), zod_1.z.unknown())]).optional(),
+        }).parse(arg);
+        return s.friends.sendGroupMessage(body.groupId, body.body, body.kind ?? 'text', body.meta);
+    });
+    handle('overlay:toggle', () => {
+        if (extra?.toggleOverlay)
+            return extra.toggleOverlay();
+        return false;
+    });
+    handle('overlay:show', () => {
+        if (extra?.showOverlay)
+            return extra.showOverlay();
+        return false;
+    });
+    handle('overlay:callState', (arg) => {
+        const { phase } = zod_1.z.object({ phase: zod_1.z.enum(['idle', 'outgoing', 'incoming', 'connecting', 'active']) }).parse(arg ?? {});
+        return extra?.setCallPhase ? extra.setCallPhase(phase) : false;
+    });
+    handle('overlay:startCall', (arg) => {
+        const body = zod_1.z.object({
+            userId: zod_1.z.number().int().nonnegative().default(0),
+            name: zod_1.z.string().max(64).optional(),
+            mcName: zod_1.z.string().max(16).optional(),
+            groupId: zod_1.z.number().int().positive().nullable().optional(),
+            memberIds: zod_1.z.array(zod_1.z.number().int().positive()).max(32).optional(),
+        }).parse(arg ?? {});
+        if (extra?.startCallOverlay) {
+            return extra.startCallOverlay(body.userId, body.name, body.mcName, body.groupId, body.memberIds);
+        }
+        return false;
+    });
     handle('java:detect', () => (0, java_1.detectJava)(s.dirs));
     handle('system:memory', () => (0, memory_1.systemMemory)());
     handle('auth:state', () => s.auth.state());
@@ -310,22 +689,40 @@ function registerIpc(s, trustedOrigins) {
     handle('net:log', () => (0, net_1.getNetLog)());
     handle('net:clear', () => (0, net_1.clearNetLog)());
     handle('net:allowedHosts', () => (0, net_1.allowedHosts)());
+    // Linux: only an AppImage can replace itself; the AppImage runtime tells where the running file is
+    const appImage = process.platform === 'linux' && process.env.APPIMAGE ? process.env.APPIMAGE : null;
+    const startDetached = (file, args, env) => new Promise((resolve, reject) => {
+        const child = (0, node_child_process_1.spawn)(file, args, { detached: true, stdio: 'ignore', env });
+        child.once('error', (err) => reject(new errors_1.AppError('UPDATE_RUN_FAILED', `Не удалось запустить установщик: ${err.message}`)));
+        child.once('spawn', () => { child.unref(); resolve(); });
+    });
     const updater = new updater_1.Updater({
         dir: path.join(electron_1.app.getPath('userData'), 'updates'),
         version: electron_1.app.getVersion(),
         platform: process.platform,
+        appImage,
+        arch: process.arch,
         repo: async () => (await s.settings.get()).updateRepo || config_1.DEFAULT_UPDATE_REPO,
+        autoInstall: async () => (await s.settings.get()).autoInstallUpdates,
         emit: (p) => s.emitProgress(p),
         gamesRunning: () => s.games.runningCount(),
-        runInstaller: (file) => new Promise((resolve, reject) => {
-            const child = (0, node_child_process_1.spawn)(file, ['--silent', '--launch'], { detached: true, stdio: 'ignore' });
-            child.once('error', (err) => reject(new errors_1.AppError('UPDATE_RUN_FAILED', `Не удалось запустить установщик: ${err.message}`)));
-            child.once('spawn', () => { child.unref(); resolve(); });
-        }),
+        runInstaller: async (file, { launch }) => {
+            if (appImage) {
+                await (0, selfUpdate_1.replaceAppImage)(file, appImage);
+                // the old process still holds the single-instance lock for a moment: start the new one a little later
+                if (launch)
+                    await startDetached('/bin/sh', ['-c', 'sleep 2; exec "$0"', appImage], (0, selfUpdate_1.relaunchEnv)(process.env));
+                return;
+            }
+            if (process.platform !== 'win32')
+                throw new errors_1.AppError('UPDATE_NO_FILE', 'Автообновление на этой системе недоступно.');
+            await startDetached(file, launch ? ['--silent', '--launch'] : ['--silent'], process.env);
+        },
         quit: () => electron_1.app.quit(),
     });
     handle('update:check', () => updater.check());
     handle('update:download', () => updater.start());
     handle('update:install', () => updater.install());
+    return { updater };
 }
 //# sourceMappingURL=ipc.js.map

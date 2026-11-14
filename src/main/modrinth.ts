@@ -77,6 +77,24 @@ const detailSchema = z.object({
   updated: z.string().nullable().optional(),
 });
 
+const detailExtSchema = detailSchema.extend({
+  client_side: z.string().nullish(),
+  server_side: z.string().nullish(),
+  source_url: z.string().nullish(),
+  issues_url: z.string().nullish(),
+  wiki_url: z.string().nullish(),
+  published: z.string().nullish(),
+});
+
+/** Project data for the AI agent: the whole Markdown body (to be paged by the caller) and the links, but no icon. */
+export interface ModrinthProjectDetails {
+  id: string; slug: string; title: string; description: string; body: string; type: ModrinthType;
+  downloads: number; follows: number; categories: string[]; loaders: string[]; gameVersions: string[];
+  clientSide: string | null; serverSide: string | null; license: string | null;
+  updated: string | null; published: string | null;
+  sourceUrl: string | null; issuesUrl: string | null; wikiUrl: string | null;
+}
+
 const versionDetailSchema = mrVersionSchema.extend({
   date_published: z.string().default(''),
   downloads: z.number().default(0),
@@ -122,7 +140,7 @@ export function loaderFilter(loader: LoaderType): string[] | null {
 export function buildFacets(q: Pick<ModrinthSearchInput, 'type' | 'mcVersion' | 'loader'>): string[][] {
   const facets: string[][] = [[`project_type:${q.type}`]];
   if (q.mcVersion) facets.push([`versions:${q.mcVersion}`]);
-  if (q.loader && q.type !== 'resourcepack') facets.push((loaderFilter(q.loader) ?? []).map((l) => `categories:${l}`));
+  if (q.loader && q.type === 'mod') facets.push((loaderFilter(q.loader) ?? []).map((l) => `categories:${l}`));
   return facets;
 }
 
@@ -342,10 +360,23 @@ export class ModrinthApi implements ModrinthLike {
     return this.get(this.versionsUrl(projectId, opts), z.array(mrVersionSchema), signal);
   }
 
+  /** Full project data without the icon download (cheap enough for the AI agent to call often). */
+  async projectDetails(id: string, signal?: AbortSignal): Promise<ModrinthProjectDetails> {
+    const p = await this.get(`${API}/project/${encodeURIComponent(id)}`, detailExtSchema, signal);
+    const type = (['mod', 'modpack', 'resourcepack', 'shader', 'datapack'].includes(p.project_type) ? p.project_type : 'mod') as ModrinthType;
+    return {
+      id: p.id, slug: p.slug, title: p.title, description: p.description, body: (p.body ?? '').slice(0, MAX_BODY_CHARS), type,
+      downloads: p.downloads, follows: p.followers, categories: p.categories, loaders: p.loaders, gameVersions: p.game_versions,
+      clientSide: p.client_side ?? null, serverSide: p.server_side ?? null, license: p.license?.name ?? null,
+      updated: p.updated ?? null, published: p.published ?? null,
+      sourceUrl: p.source_url ?? null, issuesUrl: p.issues_url ?? null, wikiUrl: p.wiki_url ?? null,
+    };
+  }
+
   /** Everything the project page needs: long Markdown description, stats, icon. */
   async projectInfo(id: string, signal?: AbortSignal): Promise<ModrinthProjectInfo> {
     const p = await this.get(`${API}/project/${encodeURIComponent(id)}`, detailSchema, signal);
-    const type = (['mod', 'modpack', 'resourcepack'].includes(p.project_type) ? p.project_type : 'mod') as ModrinthType;
+    const type = (['mod', 'modpack', 'resourcepack', 'shader', 'datapack'].includes(p.project_type) ? p.project_type : 'mod') as ModrinthType;
     return {
       id: p.id, slug: p.slug, title: p.title, description: p.description, body: (p.body ?? '').slice(0, MAX_BODY_CHARS), type,
       downloads: p.downloads, follows: p.followers, categories: p.categories, loaders: p.loaders, gameVersions: p.game_versions,
@@ -371,22 +402,34 @@ export class ModrinthApi implements ModrinthLike {
   private async icon(url: string | null | undefined, signal?: AbortSignal): Promise<string | null> {
     if (!url) return null;
     try {
-      const { res, entry } = await netRequest(url, { purpose: 'Иконка проекта', signal, headers: { 'User-Agent': this.userAgent } });
-      const type = (res.headers.get('content-type') ?? '').split(';')[0]!.trim();
-      if (!res.ok || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(type)) {
+      const { res, entry } = await netRequest(url, {
+        purpose: 'Иконка проекта',
+        signal,
+        headers: { 'User-Agent': this.userAgent, Accept: 'image/webp,image/png,image/jpeg,image/gif,*/*' },
+      });
+      if (!res.ok) {
         await res.body?.cancel().catch(() => undefined);
         return null;
       }
       const buf = Buffer.from(await res.arrayBuffer());
       entry.bytes = buf.length;
-      if (buf.length > MAX_ICON_BYTES) return null;
+      if (buf.length < 16 || buf.length > MAX_ICON_BYTES) return null;
+      let type = (res.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+      // CDN sometimes omits or mangles Content-Type — detect by magic bytes
+      if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(type)) {
+        if (buf[0] === 0x89 && buf[1] === 0x50) type = 'image/png';
+        else if (buf[0] === 0xff && buf[1] === 0xd8) type = 'image/jpeg';
+        else if (buf[0] === 0x47 && buf[1] === 0x49) type = 'image/gif';
+        else if (buf[0] === 0x52 && buf[1] === 0x49 && buf[8] === 0x57) type = 'image/webp'; // RIFF....WEBP
+        else return null;
+      }
       return `data:${type};base64,${buf.toString('base64')}`;
     } catch {
       return null; // a missing icon never breaks search
     }
   }
 
-  async search(input: ModrinthSearchInput, signal?: AbortSignal): Promise<ModrinthSearchResult> {
+  async search(input: ModrinthSearchInput, signal?: AbortSignal, opts: { icons?: boolean } = {}): Promise<ModrinthSearchResult> {
     const qs = new URLSearchParams({
       query: input.query,
       facets: JSON.stringify(buildFacets(input)),
@@ -398,13 +441,15 @@ export class ModrinthApi implements ModrinthLike {
     const hits: ModrinthHit[] = r.hits.map((h) => ({
       id: h.project_id, slug: h.slug, title: h.title, description: h.description, author: h.author,
       downloads: h.downloads, follows: h.follows, categories: h.display_categories ?? h.categories,
-      type: (['mod', 'modpack', 'resourcepack'].includes(h.project_type) ? h.project_type : input.type) as ModrinthType,
+      type: (['mod', 'modpack', 'resourcepack', 'shader', 'datapack'].includes(h.project_type) ? h.project_type : input.type) as ModrinthType,
       iconDataUrl: null,
     }));
-    const icons = r.hits.map((h) => h.icon_url);
-    await runPool(hits.map((_, i) => i), 6, async (i) => {
-      hits[i]!.iconDataUrl = await this.icon(icons[i], signal);
-    });
+    if (opts.icons !== false) {
+      const icons = r.hits.map((h) => h.icon_url);
+      await runPool(hits.map((_, i) => i), 6, async (i) => {
+        hits[i]!.iconDataUrl = await this.icon(icons[i], signal);
+      });
+    }
     return { hits, total: r.total_hits, offset: r.offset };
   }
 }
@@ -434,8 +479,17 @@ export async function readInstalled(gameDir: string): Promise<InstalledIndex> {
 }
 
 /** Modrinth project ids installed in this game directory (the file must still exist). Dependencies count too. */
-export async function listInstalledProjects(gameDir: string, kind: 'mod' | 'resourcepack'): Promise<string[]> {
-  const dir = path.join(gameDir, kind === 'mod' ? 'mods' : 'resourcepacks');
+export function contentDirName(kind: 'mod' | 'resourcepack' | 'shader' | 'datapack'): string {
+  switch (kind) {
+    case 'mod': return 'mods';
+    case 'resourcepack': return 'resourcepacks';
+    case 'shader': return 'shaderpacks';
+    case 'datapack': return 'datapacks';
+  }
+}
+
+export async function listInstalledProjects(gameDir: string, kind: 'mod' | 'resourcepack' | 'shader' | 'datapack'): Promise<string[]> {
+  const dir = path.join(gameDir, contentDirName(kind));
   const installed = await readInstalled(gameDir);
   const out: string[] = [];
   for (const [projectId, info] of Object.entries(installed.projects)) {
@@ -450,7 +504,9 @@ export interface InstallTarget {
   gameDir: string;
   mcVersion: string;
   loader: LoaderType;
-  kind: 'mod' | 'resourcepack';
+  kind: 'mod' | 'resourcepack' | 'shader' | 'datapack';
+  /** for datapack: world folder name under saves/ */
+  worldName?: string | null;
 }
 
 /** Works out which files must be downloaded: the project itself plus its required dependencies (mods only). */
@@ -459,9 +515,17 @@ export async function planInstall(api: ModrinthLike, t: InstallTarget, projectId
   if (t.kind === 'mod' && t.loader === 'vanilla') {
     throw new AppError('LOADER_REQUIRED', 'Моды не работают в инстансе Vanilla. Создай инстанс с Fabric, Quilt, Forge или NeoForge.');
   }
-  const dirName = t.kind === 'mod' ? 'mods' : 'resourcepacks';
   const ext = t.kind === 'mod' ? '.jar' : '.zip';
-  const dir = path.join(t.gameDir, dirName);
+  let dir: string;
+  if (t.kind === 'datapack') {
+    const world = (t.worldName ?? '').trim();
+    if (!world || world.includes('/') || world.includes('\\') || world.includes('..')) {
+      throw new AppError('MR_WORLD', 'Выбери мир для установки датапака');
+    }
+    dir = path.join(t.gameDir, 'saves', world, 'datapacks');
+  } else {
+    dir = path.join(t.gameDir, contentDirName(t.kind));
+  }
   const installed = await readInstalled(t.gameDir);
   const loaders = t.kind === 'mod' ? loaderFilter(t.loader) : null;
 
@@ -513,7 +577,7 @@ export async function planInstall(api: ModrinthLike, t: InstallTarget, projectId
 /** Downloads a plan. Never overwrites a different file that happens to have the same name. Returns the file names. */
 export async function runInstallPlan(
   gameDir: string,
-  kind: 'mod' | 'resourcepack',
+  kind: 'mod' | 'resourcepack' | 'shader' | 'datapack',
   plan: PlanItem[],
   report: (label: string, fraction: number) => void,
   signal?: AbortSignal,

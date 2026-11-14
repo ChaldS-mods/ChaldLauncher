@@ -10,17 +10,28 @@ import { GameManager } from './launcher';
 import { InstanceStore, type InstanceCtx } from './instances';
 import { installVersion } from './installer';
 import { downloadFile } from './download';
-import { exportInstance, inspectPack, installedIndexFor, packToPlan, type ChaldPack, type ExportResult, type PackSummary } from './chaldpack';
+import { exportInstance, inspectPack, installedIndexFor, cfInstalledIndexFor, packToPlan, type ChaldPack, type ExportResult, type PackSummary } from './chaldpack';
 import { randomBytes } from 'node:crypto';
 import { writeJsonAtomic } from './storage';
 import {
   ModrinthApi, downloadPackFiles, extractOverrides, pickVersion, planInstall, planPack, primaryFile, readMrpackIndex, runInstallPlan,
 } from './modrinth';
+import AdmZip from 'adm-zip';
+import { CurseForgeApi, installCfFile, listCfInstalled, parseCfModpackManifest } from './curseforge';
 import { safeFileName } from './paths';
+import {
+  copyGameFiles, detectLauncher, importKey, inspectFolder, toCreateInput, type DetectEnv, type RawInstance,
+} from './launcherImport';
+import { LAUNCHER_IDS, LAUNCHER_NAMES, type ImportCandidate, type LauncherId, type LauncherSource } from '../shared/launchers';
 import { configureDns } from './dns';
+import { backupSaves, disableMods, sameTarget, type VersionTarget } from './versionChange';
+import type { ChangeVersionInput } from '../shared/schemas';
 import { SettingsStore } from './settings';
 import { WardrobeService } from './wardrobe';
 import { VersionCatalog } from './versions';
+import { FriendsService } from './friends';
+import * as fs from 'node:fs';
+import * as fsp from 'node:fs/promises';
 
 export interface ServicesOptions {
   dataDir: string;
@@ -38,18 +49,34 @@ export class Services {
   readonly auth: AuthService;
   readonly games: GameManager;
   readonly wardrobe: WardrobeService;
+  readonly friends: FriendsService;
+  private readonly friendsLegacyFlag: string;
   readonly presence: PresenceService;
   readonly installs = new Map<string, AbortController>();
   readonly packs = new Map<string, AbortController>();
   readonly modrinth: ModrinthApi;
+  readonly curseforge: CurseForgeApi;
+  /** Last progress event per instance (install / modpack), so the AI agent can see how an installation is going. */
+  private lastOps = new Map<string, OpProgress>();
   /** .chaldlauncher files the user picked and we validated, waiting for the confirmation click */
   private pendingPacks = new Map<string, { file: string; manifest: ChaldPack }>();
+  /** instances found in other launchers, by the token the UI got (paths never leave the main process) */
+  private pendingImports = new Map<string, RawInstance>();
   /** Sync copy of settings for places that cannot await (window close handler). */
   closeBehavior: AppSettings['closeBehavior'] = 'quit';
 
   constructor(private o: ServicesOptions) {
+    const rawEmit = o.emit;
+    this.o = {
+      ...o,
+      emit: <K extends keyof IpcEvents>(channel: K, payload: IpcEvents[K]) => {
+        if (channel === 'op:progress') this.trackOp(payload as OpProgress);
+        rawEmit(channel, payload);
+      },
+    };
     this.dirs = sharedDirs(o.dataDir);
     this.modrinth = new ModrinthApi(`ChaldStudio/ChaldLauncher/${o.appVersion} (Minecraft launcher)`);
+    this.curseforge = new CurseForgeApi(`ChaldStudio/ChaldLauncher/${o.appVersion} (Minecraft launcher)`);
     this.settings = new SettingsStore(path.join(o.dataDir, 'settings.json'));
     this.catalog = new VersionCatalog(path.join(o.dataDir, 'cache', 'version_manifest.json'));
     this.instances = new InstanceStore(() => this.instancesRoot(), this.dirs.versions);
@@ -76,7 +103,37 @@ export class Services {
         if (st.mode !== 'microsoft' || !st.loggedIn) throw new AppError('WARDROBE_NEEDS_MS', 'Скин на аккаунте можно менять только после входа через Microsoft (офлайн-режим скин не поддерживает).');
         return (await this.auth.getLaunchAuth()).accessToken;
       },
+      onCapePreview: (id, dataUrl) => o.emit('wardrobe:capePreview', { id, dataUrl }),
     });
+    const friendsTokenFile = path.join(o.dataDir, 'friends-token.txt');
+    let friendsToken: string | null = null;
+    try {
+      if (fs.existsSync(friendsTokenFile)) {
+        friendsToken = fs.readFileSync(friendsTokenFile, 'utf8').trim() || null;
+      }
+    } catch { /* ignore */ }
+    // Chald accounts made before "login = Chald ID = nickname" are dropped once: the user registers again under the new rules.
+    this.friendsLegacyFlag = path.join(o.dataDir, 'friends-legacy-reset.flag');
+    const accountMarker = path.join(o.dataDir, 'friends-account.v2');
+    try {
+      if (!fs.existsSync(accountMarker)) {
+        if (friendsToken) {
+          friendsToken = null;
+          fs.writeFileSync(friendsTokenFile, '', 'utf8');
+          fs.writeFileSync(this.friendsLegacyFlag, '1', 'utf8');
+        }
+        fs.mkdirSync(o.dataDir, { recursive: true });
+        fs.writeFileSync(accountMarker, '2', 'utf8');
+      }
+    } catch { /* a failed migration must never stop the launcher */ }
+    this.friends = new FriendsService(this.settings, {
+      get: () => friendsToken,
+      set: (t) => {
+        friendsToken = t;
+        void fsp.writeFile(friendsTokenFile, t ?? '', 'utf8').catch(() => undefined);
+      },
+    });
+    if (friendsToken) this.friends.startHeartbeat();
     this.presence = new PresenceService({
       appVersion: o.appVersion,
       clientId: DEFAULT_DISCORD_CLIENT_ID,
@@ -95,7 +152,34 @@ export class Services {
         this.trackPresence(e);
       },
       onLog: (e: GameLogEvent) => o.emit('game:log', e),
+      onNotice: (e) => o.emit('game:notice', e),
     });
+  }
+
+  get appVersion(): string {
+    return this.o.appVersion;
+  }
+
+  private trackOp(p: OpProgress): void {
+    if (!p.instanceId || (p.kind !== 'install' && p.kind !== 'modpack')) return;
+    this.lastOps.set(p.instanceId, p);
+    if (this.lastOps.size > 50) this.lastOps.delete(this.lastOps.keys().next().value!);
+  }
+
+  /** The most recent install/modpack progress of an instance (null if nothing was started in this session). */
+  lastOp(instanceId: string): OpProgress | null {
+    return this.lastOps.get(instanceId) ?? null;
+  }
+
+  /** True once after the legacy Chald session was dropped (to tell the user to register again). */
+  consumeFriendsLegacyReset(): boolean {
+    try {
+      if (!fs.existsSync(this.friendsLegacyFlag)) return false;
+      fs.rmSync(this.friendsLegacyFlag, { force: true });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async init(): Promise<void> {
@@ -105,10 +189,11 @@ export class Services {
     this.presence.configure(s.discordRpc, s.discordShowInstance, s.language);
   }
 
-  /** Mirrors a started/stopped game to the Discord status. Never throws: the status is a nicety. */
+  /** Mirrors a started/stopped game to the Discord status and Chald Friends presence. Never throws. */
   private trackPresence(e: GameStatusEvent): void {
     if (e.status !== 'running') {
       this.presence.gameStopped(e.instanceId);
+      this.friends.setPresence('launcher', '');
       return;
     }
     void this.instances
@@ -117,6 +202,7 @@ export class Services {
         // the game may already be gone by the time the file is read
         if (!this.games.activeIds().has(e.instanceId)) return;
         this.presence.gameStarted({ id: e.instanceId, name: meta.name, mcVersion: meta.mcVersion, loader: meta.loader.type, since: Date.now() });
+        this.friends.setPresence('game', meta.name);
       })
       .catch(() => undefined);
   }
@@ -134,8 +220,17 @@ export class Services {
     return { running: this.games.activeIds(), installing: new Set(this.installs.keys()) };
   }
 
-  /** Starts installing (or repairing) an instance in the background; progress goes out as op:progress events. */
-  startInstall(id: string): void {
+  /**
+   * Starts installing (or repairing) an instance in the background; progress goes out as op:progress events.
+   * With `change` the instance is moved to another Minecraft version / loader: the new version is installed first and
+   * only when that has worked is the instance switched (so a failure leaves a playable instance behind).
+   */
+  startInstall(id: string, change?: { target: VersionTarget; backupSaves: boolean; disableMods: boolean }): void {
+    void this.beginInstall(id, change);
+  }
+
+  /** Like startInstall, but the returned promise settles when the installation is over (it never rejects after starting). */
+  beginInstall(id: string, change?: { target: VersionTarget; backupSaves: boolean; disableMods: boolean }): Promise<void> {
     if (this.installs.has(id)) throw new AppError('ALREADY_INSTALLING', 'Установка уже идёт');
     if (this.games.activeIds().has(id)) throw new AppError('ALREADY_RUNNING', 'Останови игру перед установкой');
     const ac = new AbortController();
@@ -145,18 +240,30 @@ export class Services {
       this.o.emit('op:progress', { opId, kind: 'install', instanceId: id, label, fraction, status, message });
     emit('Подготовка…', null);
 
-    void (async () => {
+    return (async () => {
       try {
         const meta = await this.instances.readMeta(id);
         const settings = await this.settings.get();
+        const target: VersionTarget = change?.target ?? { mcVersion: meta.mcVersion, loader: meta.loader };
         const { versionId } = await installVersion(
-          { mcVersion: meta.mcVersion, loader: meta.loader },
+          target,
           this.dirs, this.catalog, (p) => emit(p.label, p.fraction), ac.signal,
           { javaFor: (major) => this.games.ensureJava(meta.settings.javaPath || settings.javaPath, major, (l, f) => emit(l, f), ac.signal) },
         );
-        await this.instances.patchInternal(id, { installed: true, versionId });
+        if (change) {
+          ac.signal.throwIfAborted();
+          const gameDir = await this.instances.gameDir(id);
+          if (change.backupSaves) {
+            emit('Копирую миры в резервную копию…', null);
+            await backupSaves(gameDir, meta.mcVersion);
+          }
+          if (change.disableMods) await disableMods(gameDir);
+          await this.instances.applyVersion(id, { mcVersion: target.mcVersion, loader: target.loader, versionId });
+        } else {
+          await this.instances.patchInternal(id, { installed: true, versionId });
+        }
         this.installs.delete(id);
-        emit('Установка завершена', 1, 'done');
+        emit(change ? 'Версия изменена' : 'Установка завершена', 1, 'done');
       } catch (e) {
         this.installs.delete(id);
         if (isAbort(e) || ac.signal.aborted) emit('Установка отменена', null, 'cancelled');
@@ -169,13 +276,81 @@ export class Services {
     this.installs.get(id)?.abort();
   }
 
-  /** Installs a mod or resource pack (and the required dependencies of a mod) into an instance. Returns the file names. */
-  async installFromModrinth(id: string, projectId: string, kind: 'mod' | 'resourcepack', versionId?: string | null): Promise<string[]> {
+  /** Moves an existing instance to another Minecraft version and/or loader (installs it in the background). */
+  async startVersionChange(input: ChangeVersionInput): Promise<void> {
+    const { id } = input;
+    if (this.installs.has(id)) throw new AppError('ALREADY_INSTALLING', 'Установка уже идёт');
+    if (this.games.activeIds().has(id)) throw new AppError('ALREADY_RUNNING', 'Останови игру перед сменой версии');
+    const meta = await this.instances.readMeta(id);
+    const target: VersionTarget = {
+      mcVersion: input.mcVersion,
+      loader: { type: input.loader.type, version: input.loader.type === 'vanilla' ? null : input.loader.version },
+    };
+    if (meta.installed && sameTarget(target, meta)) throw new AppError('VERSION_UNCHANGED', 'Версия Minecraft и загрузчик те же: менять нечего');
+    this.startInstall(id, { target, backupSaves: input.backupSaves, disableMods: input.disableMods });
+  }
+
+  /** Install a CurseForge mod / resource pack into an instance. Returns the file name. */
+  async installFromCurseForge(
+    id: string,
+    modId: number,
+    kind: 'mod' | 'resourcepack' | 'shader' | 'datapack',
+    fileId?: number | null,
+    worldName?: string | null,
+  ): Promise<string> {
     if (this.games.activeIds().has(id)) throw new AppError('BUSY', 'Останови игру, чтобы менять файлы');
     if (this.installs.has(id)) throw new AppError('BUSY', 'Идёт установка инстанса: изменение файлов недоступно');
     const meta = await this.instances.readMeta(id);
     const gameDir = await this.instances.gameDir(id);
-    const target = { gameDir, mcVersion: meta.mcVersion, loader: meta.loader.type, kind };
+    const opId = `curseforge:${id}:${modId}`;
+    const emit = (label: string, fraction: number | null, status: OpProgress['status'] = 'running', message: string | null = null) =>
+      this.o.emit('op:progress', { opId, kind: 'install', instanceId: id, label, fraction, status, message });
+    emit('Ищу файл на CurseForge…', null);
+    try {
+      const name = await installCfFile({
+        api: this.curseforge,
+        gameDir,
+        kind,
+        modId,
+        fileId,
+        mcVersion: meta.mcVersion,
+        loader: meta.loader.type,
+        worldName,
+      });
+      emit('Установлено', 1, 'done');
+      return name;
+    } catch (e) {
+      emit('Установка прервана', null, 'cancelled');
+      throw e;
+    }
+  }
+
+  openCurseForgePage(slug: string, kind: 'mod' | 'modpack' | 'resourcepack' | 'shader' | 'datapack' = 'mod'): void {
+    const segment =
+      kind === 'modpack' ? 'modpacks'
+      : kind === 'resourcepack' ? 'texture-packs'
+      : kind === 'shader' ? 'shaders'
+      : kind === 'datapack' ? 'data-packs'
+      : 'mc-mods';
+    this.o.openExternal(`https://www.curseforge.com/minecraft/${segment}/${encodeURIComponent(slug)}`);
+  }
+
+  async listWorlds(id: string): Promise<string[]> {
+    return this.instances.listWorlds(id);
+  }
+
+  async listCurseForgeInstalled(id: string, kind: 'mod' | 'resourcepack' | 'shader' | 'datapack'): Promise<number[]> {
+    const gameDir = await this.instances.gameDir(id);
+    return listCfInstalled(gameDir, kind);
+  }
+
+  /** Installs a mod or resource pack (and the required dependencies of a mod) into an instance. Returns the file names. */
+  async installFromModrinth(id: string, projectId: string, kind: 'mod' | 'resourcepack' | 'shader' | 'datapack', versionId?: string | null, worldName?: string | null): Promise<string[]> {
+    if (this.games.activeIds().has(id)) throw new AppError('BUSY', 'Останови игру, чтобы менять файлы');
+    if (this.installs.has(id)) throw new AppError('BUSY', 'Идёт установка инстанса: изменение файлов недоступно');
+    const meta = await this.instances.readMeta(id);
+    const gameDir = await this.instances.gameDir(id);
+    const target = { gameDir, mcVersion: meta.mcVersion, loader: meta.loader.type, kind, worldName: worldName ?? null };
     const opId = `modrinth:${id}:${projectId}`;
     const emit = (label: string, fraction: number | null, status: OpProgress['status'] = 'running', message: string | null = null) =>
       this.o.emit('op:progress', { opId, kind: 'install', instanceId: id, label, fraction, status, message });
@@ -248,6 +423,145 @@ export class Services {
     })();
   }
 
+  /**
+   * Downloads a CurseForge modpack zip, creates an instance from manifest.json,
+   * pulls every required project file, applies overrides/, then installs Minecraft + loader.
+   */
+  startCfModpack(modId: number, fileId?: number | null): void {
+    const key = `cf:${modId}:${fileId ?? 0}`;
+    if (this.packs.has(key)) throw new AppError('ALREADY_INSTALLING', 'Эта сборка уже устанавливается');
+    const ac = new AbortController();
+    this.packs.set(key, ac);
+    const opId = `modpack:${key}`;
+    let instanceId: string | null = null;
+    let title = 'Сборка CurseForge';
+    const emit = (label: string, fraction: number | null, status: OpProgress['status'] = 'running', message: string | null = null) =>
+      this.o.emit('op:progress', { opId, kind: 'modpack', instanceId, label, fraction, status, message });
+    emit('Загружаю сведения о сборке CurseForge…', null);
+
+    void (async () => {
+      try {
+        const project = await this.curseforge.getMod(modId, ac.signal);
+        title = project.title || title;
+        if (project.type !== 'modpack') throw new AppError('PACK_INVALID', 'Это не сборка CurseForge (modpack)');
+
+        // Prefer an explicit file; otherwise the newest available pack zip.
+        let packMeta = fileId
+          ? await this.curseforge.getFile(modId, fileId, ac.signal)
+          : (await this.curseforge.files(modId, { pageSize: 50 }, ac.signal))[0];
+        if (!packMeta) throw new AppError('CF_NO_FILE', 'У сборки нет файлов для скачивания');
+        if (!packMeta.fileName.toLowerCase().endsWith('.zip')) {
+          // Some packs use .zip only in the CDN path; still try if downloadable.
+          const lower = packMeta.fileName.toLowerCase();
+          if (!lower.endsWith('.zip') && !lower.endsWith('.cfpack')) {
+            throw new AppError('PACK_INVALID', 'Файл сборки CurseForge должен быть .zip');
+          }
+        }
+
+        const packFile = path.join(this.dirs.root, 'cache', 'modpacks', safeFileName(`cf-${modId}-${packMeta.id}.zip`));
+        emit(`Скачиваю сборку «${title}»…`, null);
+        await downloadFile(
+          {
+            url: this.curseforge.resolveDownloadUrl(packMeta),
+            dest: packFile,
+            sha1: packMeta.sha1 ?? undefined,
+            size: packMeta.size || undefined,
+            purpose: 'Сборка CurseForge',
+          },
+          { signal: ac.signal },
+        );
+
+        let zip: AdmZip;
+        try {
+          zip = new AdmZip(packFile);
+        } catch {
+          throw new AppError('PACK_INVALID', 'Не удалось открыть архив сборки CurseForge');
+        }
+        const manifestEntry = zip.getEntries().find((e) => !e.isDirectory && e.entryName.replace(/\\/g, '/').split('/').pop()?.toLowerCase() === 'manifest.json');
+        if (!manifestEntry) throw new AppError('PACK_INVALID', 'В архиве нет manifest.json');
+        const manifest = parseCfModpackManifest(manifestEntry.getData().toString('utf8'));
+        title = manifest.name || title;
+
+        const hash = [...String(modId)].reduce((a, c) => (a + c.charCodeAt(0)) % 8, 0);
+        const inst = await this.instances.create({
+          name: title.slice(0, 48),
+          description: (project.description || '').slice(0, 120),
+          mcVersion: manifest.mcVersion,
+          loader: {
+            type: manifest.loader.type,
+            version: manifest.loader.type === 'vanilla' ? null : manifest.loader.version,
+          },
+          kind: 'custom',
+          coverColor: hash,
+          settings: { javaPath: '', memoryMinMb: null, memoryMaxMb: null, jvmArgs: '', width: null, height: null, fullscreen: null },
+        }, this.ctx());
+        instanceId = inst.id;
+        const gameDir = await this.instances.gameDir(inst.id);
+        await fsp.mkdir(path.join(gameDir, 'mods'), { recursive: true });
+
+        const files = manifest.files.filter((f) => f.required);
+        const total = Math.max(1, files.length);
+        const cfIndex: { projects: Record<string, { file: string; fileId: number }> } = { projects: {} };
+        let done = 0;
+        for (const f of files) {
+          ac.signal.throwIfAborted();
+          emit(`Скачиваю моды (${done + 1}/${total})…`, done / total * 0.85);
+          try {
+            const fileInfo = await this.curseforge.getFile(f.projectID, f.fileID, ac.signal);
+            const destName = safeFileName(fileInfo.fileName);
+            const dest = path.join(gameDir, 'mods', destName);
+            await downloadFile(
+              {
+                url: this.curseforge.resolveDownloadUrl(fileInfo),
+                dest,
+                sha1: fileInfo.sha1 ?? undefined,
+                size: fileInfo.size || undefined,
+                purpose: 'Мод сборки CurseForge',
+              },
+              { signal: ac.signal },
+            );
+            cfIndex.projects[String(f.projectID)] = { file: destName, fileId: f.fileID };
+          } catch (e) {
+            // Required file failed — surface a clear error rather than a half-empty instance.
+            throw new AppError(
+              'CF_PACK_FILE',
+              `Не удалось скачать файл CurseForge project=${f.projectID} file=${f.fileID}: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+          done++;
+        }
+        await writeJsonAtomic(path.join(gameDir, '.chald-curseforge.json'), cfIndex);
+
+        // Extract overrides/ (configs, resource packs, options…) into the game dir.
+        emit('Копирую overrides…', 0.9);
+        const prefix = `${manifest.overrides}/`;
+        for (const entry of zip.getEntries()) {
+          if (entry.isDirectory) continue;
+          const name = entry.entryName.replace(/\\/g, '/');
+          const idx = name.toLowerCase().indexOf(prefix.toLowerCase());
+          // accept both "overrides/foo" at root and "SomeFolder/overrides/foo"
+          let rel: string | null = null;
+          if (name.toLowerCase().startsWith(prefix.toLowerCase())) rel = name.slice(prefix.length);
+          else if (idx > 0) rel = name.slice(idx + prefix.length);
+          if (!rel || rel.includes('..')) continue;
+          const dest = path.join(gameDir, ...rel.split('/').map((p, i, a) => (i === a.length - 1 ? safeFileName(p) : p)));
+          await fsp.mkdir(path.dirname(dest), { recursive: true });
+          await fsp.writeFile(dest, entry.getData());
+        }
+
+        this.packs.delete(key);
+        emit(`Сборка «${title}» добавлена. Устанавливаю Minecraft…`, 1, 'done');
+        this.startInstall(inst.id);
+      } catch (e) {
+        this.packs.delete(key);
+        if (instanceId) await this.instances.remove(instanceId, true).catch(() => undefined);
+        instanceId = null;
+        if (isAbort(e) || ac.signal.aborted) emit('Установка сборки отменена', null, 'cancelled');
+        else emit(`Не удалось установить «${title}»`, null, 'error', e instanceof Error ? e.message : String(e));
+      }
+    })();
+  }
+
   /** Validates a picked .chaldlauncher file and remembers it under a token; nothing is written yet. */
   inspectChaldPack(file: string): { token: string; summary: PackSummary } {
     const { manifest, summary } = inspectPack(file);
@@ -285,6 +599,10 @@ export class Services {
         emit('Копирую файлы из архива…', 0.9);
         await extractOverrides(file, gameDir, ac.signal);
         await writeJsonAtomic(path.join(gameDir, '.chald-modrinth.json'), installedIndexFor(m));
+        const cfIdx = cfInstalledIndexFor(m);
+        if (Object.keys(cfIdx.projects).length) {
+          await writeJsonAtomic(path.join(gameDir, '.chald-curseforge.json'), cfIdx);
+        }
         this.packs.delete(key);
         emit(`Инстанс «${m.name}» импортирован. Устанавливаю Minecraft…`, 1, 'done');
         this.startInstall(inst.id);
@@ -318,7 +636,8 @@ export class Services {
     };
     send('Подготовка…', 0, 'running');
     try {
-      const r = await exportInstance({ gameDir, meta, includeWorlds, out, api: this.modrinth, report });
+      const r = await exportInstance({ gameDir, meta, includeWorlds, out, api: this.modrinth,
+        cfApi: this.curseforge, report });
       send('Экспорт готов', 1, 'done');
       return r;
     } catch (e) {
@@ -335,5 +654,125 @@ export class Services {
 
   cancelModpack(projectId: string): void {
     this.packs.get(projectId)?.abort();
+  }
+
+  // ---------------------------------------------------------------- import from other launchers
+
+  private rememberImports(raws: RawInstance[], imported: ReadonlySet<string>): ImportCandidate[] {
+    return raws.map((r) => {
+      const token = randomBytes(8).toString('hex');
+      this.pendingImports.set(token, r);
+      if (this.pendingImports.size > 600) this.pendingImports.delete(this.pendingImports.keys().next().value!);
+      return {
+        token, name: r.name, mcVersion: r.mcVersion, loader: r.loader, mods: r.mods, worlds: r.worlds,
+        imported: imported.has(importKey(r)), problem: r.problem,
+      };
+    });
+  }
+
+  private async importedKeys(): Promise<Set<string>> {
+    const list = await this.instances.list(this.ctx()).catch(() => []);
+    return new Set(list.map((i) => i.importedFrom).filter((v): v is string => typeof v === 'string'));
+  }
+
+  /** Looks for the other launchers on this computer. Every supported launcher is listed, installed or not. */
+  async detectLaunchers(env: DetectEnv): Promise<LauncherSource[]> {
+    const imported = await this.importedKeys();
+    const found = await Promise.all(LAUNCHER_IDS.map(async (id) => {
+      try {
+        return await detectLauncher(id, env);
+      } catch {
+        return null; // an unreadable launcher folder must not break the list
+      }
+    }));
+    return LAUNCHER_IDS.map((id: LauncherId, n) => {
+      const f = found[n] ?? null;
+      return { id, name: LAUNCHER_NAMES[id], path: f?.path ?? null, found: !!f, candidates: f ? this.rememberImports(f.instances, imported) : [] };
+    });
+  }
+
+  /** A folder the user picked: recognises what is in it (launcher data folder, instances folder or one instance). */
+  async sourceFromFolder(dir: string): Promise<LauncherSource> {
+    const raws = await inspectFolder(dir);
+    return { id: 'custom', name: path.basename(dir) || dir, path: dir, found: true, candidates: this.rememberImports(raws, await this.importedKeys()) };
+  }
+
+  /**
+   * Copies the chosen instances into ChaldLauncher (the other launcher is only read). Progress: op `modpack:import-<batch>`.
+   * Minecraft + the loader are installed afterwards, one instance at a time.
+   */
+  startLauncherImport(tokens: string[]): { batch: string } {
+    const items = [...new Set(tokens)].map((t) => this.pendingImports.get(t)).filter((r): r is RawInstance => !!r && !r.problem);
+    if (!items.length) throw new AppError('IMPORT_EXPIRED', 'Список устарел или нечего импортировать. Открой импорт заново.');
+    const batch = randomBytes(6).toString('hex');
+    const key = `import-${batch}`;
+    const ac = new AbortController();
+    this.packs.set(key, ac);
+    const opId = `modpack:${key}`;
+    let current: string | null = null;
+    const emit = (label: string, fraction: number | null, status: OpProgress['status'] = 'running', message: string | null = null, id: string | null = current) =>
+      this.o.emit('op:progress', { opId, kind: 'modpack', instanceId: id, label, fraction, status, message });
+    emit('Подготовка импорта…', null);
+
+    void (async () => {
+      const created: string[] = [];
+      const failures: string[] = [];
+      let last = 0;
+      for (const [n, r] of items.entries()) {
+        if (ac.signal.aborted) break;
+        const head = items.length > 1 ? `Импорт ${n + 1} из ${items.length}: «${r.name}»` : `Импорт «${r.name}»`;
+        let id: string | null = null;
+        try {
+          emit(`${head}…`, n / items.length);
+          const inst = await this.instances.create(toCreateInput(r), this.ctx());
+          id = inst.id;
+          const gameDir = await this.instances.gameDir(id);
+          await copyGameFiles(r.gameDir, gameDir, {
+            signal: ac.signal,
+            onProgress: (f) => {
+              const now = Date.now();
+              if (f < 1 && now - last < 120) return; // hundreds of small files: do not flood the IPC channel
+              last = now;
+              emit(`${head}: копирую файлы`, (n + f) / items.length, 'running', null, null);
+            },
+          });
+          if (r.cfIndex) await writeJsonAtomic(path.join(gameDir, '.chald-curseforge.json'), { projects: r.cfIndex });
+          if (r.iconFile) await this.instances.setCoverFromFile(id, r.iconFile).catch(() => undefined);
+          await this.instances.patchInternal(id, { importedFrom: importKey(r), ...(r.lastPlayedAt ? { lastPlayedAt: r.lastPlayedAt } : {}) });
+          created.push(id);
+          current = id;
+        } catch (e) {
+          if (id) await this.instances.remove(id, true).catch(() => undefined);
+          if (isAbort(e) || ac.signal.aborted) break;
+          failures.push(`«${r.name}»: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      this.packs.delete(key);
+      failures.forEach((msg, i) => this.o.emit('op:progress', {
+        opId: `${opId}-err${i}`, kind: 'modpack', instanceId: null, label: 'Не удалось импортировать', fraction: null, status: 'error', message: msg,
+      }));
+      if (created.length) {
+        emit(created.length === 1 ? 'Инстанс импортирован. Устанавливаю Minecraft…' : `Импортировано инстансов: ${created.length}. Устанавливаю Minecraft…`, 1, 'done', null, created[created.length - 1]!);
+        // one at a time: several loader installs at once would fight over the shared libraries
+        for (const id of created) {
+          try {
+            await this.beginInstall(id);
+          } catch {
+            /* the user already started it by hand, or the game is running */
+          }
+        }
+      } else if (ac.signal.aborted) {
+        emit('Импорт отменён', null, 'cancelled', null, null);
+      } else if (!failures.length) {
+        emit('Нечего импортировать', null, 'cancelled', null, null);
+      } else {
+        emit('Импорт не удался', null, 'cancelled', null, null);
+      }
+    })();
+    return { batch };
+  }
+
+  cancelLauncherImport(batch: string): void {
+    this.packs.get(`import-${batch}`)?.abort();
   }
 }

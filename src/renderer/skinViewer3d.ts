@@ -3,7 +3,10 @@ import {
   PerspectiveCamera, Scene, SRGBColorSpace, WebGLRenderer,
 } from 'three';
 import type { SkinVariant } from '../shared/skin';
-import { boxFaces, LEGACY_MIRROR_COPIES, PIVOTS, skinBoxes, type LimbGroup, type SkinBox } from '../shared/skin3d';
+import {
+  boxFaces, CAPE_BOX, CAPE_LAYOUT, CAPE_OUTER, CAPE_PIVOT, CAPE_REST_ANGLE, capeScale, ELYTRA_BOX, ELYTRA_PIVOT, ELYTRA_REST, hatIsUsed,
+  LEGACY_MIRROR_COPIES, PIVOTS, skinBoxes, type LimbGroup, type SkinBox,
+} from '../shared/skin3d';
 
 const TEX = 64;
 
@@ -26,13 +29,14 @@ export function skinCanvas(img: CanvasImageSource & { width: number; height: num
     }
     // the game ignores the hat of an old skin whose hat area has no transparent pixel at all
     const d = ctx.getImageData(32, 0, 32, 16).data;
-    hatUsed = false;
-    for (let i = 3; i < d.length; i += 4) if (d[i]! < 128) { hatUsed = true; break; }
+    const alpha: number[] = [];
+    for (let i = 3; i < d.length; i += 4) alpha.push(d[i]!);
+    hatUsed = hatIsUsed(true, alpha);
   }
   return { canvas, hatUsed };
 }
 
-function boxGeometry(b: SkinBox, pivot: [number, number, number]): BufferGeometry {
+function boxGeometry(b: SkinBox, pivot: [number, number, number], texW = TEX, texH = TEX): BufferGeometry {
   const pos: number[] = [], uv: number[] = [], nor: number[] = [], idx: number[] = [];
   for (const f of boxFaces(b)) {
     const base = pos.length / 3;
@@ -40,7 +44,7 @@ function boxGeometry(b: SkinBox, pivot: [number, number, number]): BufferGeometr
     const uvs = [[x, y], [x + w, y], [x, y + h], [x + w, y + h]];
     f.corners.forEach((c, i) => {
       pos.push(c[0] - pivot[0], c[1] - pivot[1], c[2] - pivot[2]);
-      uv.push(uvs[i]![0]! / TEX, uvs[i]![1]! / TEX);
+      uv.push(uvs[i]![0]! / texW, uvs[i]![1]! / texH);
       nor.push(...f.normal);
     });
     idx.push(base, base + 2, base + 3, base, base + 3, base + 1); // counter-clockwise seen from outside
@@ -62,11 +66,17 @@ export class SkinViewer3D {
   private model: Group | null = null;
   private limbs: Partial<Record<LimbGroup, Group>> = {};
   private texture: CanvasTexture | null = null;
+  private capeTexture: CanvasTexture | null = null;
+  private capeGroup: Group | null = null;
+  /** the cape's hanging point: it tilts while the character walks */
+  private capeHang: Group | null = null;
+  private accessoryMode: 'none' | 'cape' | 'elytra' = 'none';
   private raf = 0;
   private t0 = performance.now();
   private yaw = -0.55;
   private pitch = 0.12;
   private dist = 74;
+  private userZoomed = false; // the player used the wheel: stop choosing the distance for them
   private dragging = false;
   private lastX = 0;
   private lastY = 0;
@@ -95,7 +105,7 @@ export class SkinViewer3D {
       this.lastX = e.clientX; this.lastY = e.clientY;
     };
     const up = () => { this.dragging = false; };
-    const wheel = (e: WheelEvent) => { e.preventDefault(); this.dist = Math.max(42, Math.min(120, this.dist * (1 + Math.sign(e.deltaY) * 0.08))); };
+    const wheel = (e: WheelEvent) => { e.preventDefault(); this.userZoomed = true; this.dist = Math.max(42, Math.min(120, this.dist * (1 + Math.sign(e.deltaY) * 0.08))); };
     canvas.addEventListener('pointerdown', down);
     canvas.addEventListener('pointermove', move);
     canvas.addEventListener('pointerup', up);
@@ -120,6 +130,14 @@ export class SkinViewer3D {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    this.fitDistance();
+  }
+
+  /** Camera distance: the spread elytra wings (about ±22 texels wide, plus a margin) must fit whatever shape the window has. */
+  private fitDistance(): void {
+    if (this.userZoomed) return;
+    const need = this.accessoryMode === 'elytra' ? Math.ceil(25 / (Math.tan(Math.PI / 12) * this.camera.aspect)) : 0;
+    this.dist = Math.min(120, Math.max(74, need));
   }
 
   /** Replaces the skin (and the arm model). */
@@ -149,6 +167,102 @@ export class SkinViewer3D {
     this.pivot.add(model);
   }
 
+
+  /** Attach or replace the cape texture (the PNG also holds the elytra). Pass null to remove. */
+  setCape(img: CanvasImageSource & { width: number; height: number } | null): void {
+    this.clearCape();
+    if (!img) return;
+    // the layout is 64x32 units; an HD cape is the same layout scaled, so UVs are fractions of the layout
+    const s = capeScale(img.width, img.height);
+    const canvas = document.createElement('canvas');
+    canvas.width = CAPE_LAYOUT.w * s;
+    canvas.height = CAPE_LAYOUT.h * s;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(img, 0, 0);
+    this.paintMissingElytra(ctx, s);
+    const tex = new CanvasTexture(canvas);
+    tex.colorSpace = SRGBColorSpace;
+    tex.magFilter = NearestFilter;
+    tex.minFilter = NearestFilter;
+    tex.generateMipmaps = false;
+    tex.flipY = false;
+    this.capeTexture = tex;
+    this.rebuildCape();
+  }
+
+  /** A cape file without elytra wings (a cropped 22x17 cape): the wings get the cape's pattern instead of staying invisible. */
+  private paintMissingElytra(ctx: CanvasRenderingContext2D, s: number): void {
+    const { data } = ctx.getImageData(22 * s, 0, 24 * s, 22 * s);
+    for (let i = 3; i < data.length; i += 4) if (data[i]! > 0) return; // the wings are there
+    const o = CAPE_OUTER;
+    for (const x of [24, 36]) ctx.drawImage(ctx.canvas, o.x * s, o.y * s, o.w * s, o.h * s, x * s, 2 * s, 10 * s, 20 * s);
+  }
+
+  /** Show the cape hanging on the back, the elytra wings, or nothing. */
+  setAccessoryMode(mode: 'none' | 'cape' | 'elytra'): void {
+    this.accessoryMode = mode;
+    this.fitDistance(); // the spread wings are wider than the body: step back so they are not cut off
+    this.rebuildCape();
+  }
+
+  private disposeCapeMeshes(): void {
+    if (!this.capeGroup) return;
+    this.pivot.remove(this.capeGroup);
+    this.capeGroup.traverse((o) => {
+      if (o instanceof Mesh) {
+        o.geometry.dispose();
+        (o.material as MeshLambertMaterial).dispose(); // the texture is shared and is disposed with the cape
+      }
+    });
+    this.capeGroup = null;
+    this.capeHang = null;
+  }
+
+  private rebuildCape(): void {
+    this.disposeCapeMeshes();
+    if (!this.capeTexture || this.accessoryMode === 'none') return;
+    const mat = new MeshLambertMaterial({ map: this.capeTexture, alphaTest: 0.5 });
+    const geo = (b: SkinBox) => boxGeometry(b, [0, 0, 0], CAPE_LAYOUT.w, CAPE_LAYOUT.h);
+    const group = new Group();
+    group.position.y = -16; // same offset as the body, so model coordinates match
+
+    if (this.accessoryMode === 'cape') {
+      // hangs from the top of the back; turned by 180° like in the game so its outer face shows the design
+      const hang = new Group();
+      hang.position.set(...CAPE_PIVOT);
+      hang.rotation.x = CAPE_REST_ANGLE;
+      const flip = new Group();
+      flip.rotation.y = Math.PI;
+      flip.add(new Mesh(geo(CAPE_BOX), mat));
+      hang.add(flip);
+      group.add(hang);
+      this.capeHang = hang;
+    } else {
+      // two wings: the right one as in the texture, the left one is its mirror image
+      for (const left of [false, true]) {
+        const holder = new Group();
+        holder.position.set(0, ELYTRA_PIVOT[1], ELYTRA_PIVOT[2]);
+        if (left) holder.scale.x = -1;
+        const wing = new Group();
+        wing.position.x = -ELYTRA_PIVOT[0];
+        wing.rotation.order = 'ZYX'; // tilt back first, then spread outward (the game's order)
+        wing.rotation.set(ELYTRA_REST.x, 0, -ELYTRA_REST.z);
+        wing.add(new Mesh(geo(ELYTRA_BOX), mat));
+        holder.add(wing);
+        group.add(holder);
+      }
+    }
+    this.capeGroup = group;
+    this.pivot.add(group);
+  }
+
+  private clearCape(): void {
+    this.disposeCapeMeshes();
+    this.capeTexture?.dispose();
+    this.capeTexture = null;
+  }
+
   private clearModel(): void {
     if (this.model) {
       this.pivot.remove(this.model);
@@ -171,6 +285,8 @@ export class SkinViewer3D {
     if (L.leftArm) L.leftArm.rotation.x = -a;
     if (L.rightLeg) L.rightLeg.rotation.x = -a;
     if (L.leftLeg) L.leftLeg.rotation.x = a;
+    // the cape lifts a little with every step
+    if (this.capeHang) this.capeHang.rotation.x = CAPE_REST_ANGLE + this.swing * (0.5 + 0.5 * Math.sin(t * 6.4)) * 0.22;
     this.pivot.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
     this.camera.position.set(0, 16 + 2, this.dist);
     this.camera.lookAt(0, 16, 0);
@@ -181,6 +297,7 @@ export class SkinViewer3D {
     cancelAnimationFrame(this.raf);
     this.ro?.disconnect();
     this.off.forEach((f) => f());
+    this.clearCape();
     this.clearModel();
     this.renderer.dispose();
     this.renderer.forceContextLoss();

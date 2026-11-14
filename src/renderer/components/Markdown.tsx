@@ -46,10 +46,13 @@ function inline(text: string, key: string): ReactNode[] {
   return out;
 }
 
+const isTableSep = (l: string | undefined): boolean => !!l && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(l) && l.includes('-') && (l.includes('|') || /^\s*:?-{3,}/.test(l));
+const tableCells = (l: string): string[] => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+
 export function Markdown({ text }: { text: string }) {
   // Raw HTML is dropped everywhere except inside fenced code blocks, where it is plain text.
   let fenced = false;
-  const lines = text
+  const lines = String(text ?? '')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/\r\n?/g, '\n')
     .split('\n')
@@ -82,6 +85,22 @@ export function Markdown({ text }: { text: string }) {
       continue;
     }
     if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { blocks.push(<hr key={key} />); i++; continue; }
+
+    if (line.includes('|') && isTableSep(lines[i + 1]) && lines[i + 1]!.includes('|')) {
+      const head = tableCells(line);
+      const rows: string[][] = [];
+      i += 2;
+      while (i < lines.length && lines[i]!.includes('|') && lines[i]!.trim() !== '') rows.push(tableCells(lines[i++]!));
+      blocks.push(
+        <div key={key} className="md-table">
+          <table>
+            <thead><tr>{head.map((c, ci) => <th key={ci}>{inline(c, `${key}-h${ci}`)}</th>)}</tr></thead>
+            <tbody>{rows.map((r, ri) => <tr key={ri}>{head.map((_, ci) => <td key={ci}>{inline(r[ci] ?? '', `${key}-${ri}-${ci}`)}</td>)}</tr>)}</tbody>
+          </table>
+        </div>,
+      );
+      continue;
+    }
 
     const ul = /^\s*[-*+]\s+(.*)$/.exec(line);
     const ol = /^\s*\d+[.)]\s+(.*)$/.exec(line);

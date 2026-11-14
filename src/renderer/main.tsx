@@ -8,6 +8,7 @@ import '@fontsource/rubik/latin-600.css';
 import './tokens.css';
 import './app.css';
 import './pages.css';
+import './app-friends-layout.css';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';

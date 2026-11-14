@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chald Overlay</title>
+    <script type="module" crossorigin src="./assets/overlay-BrFiNlhj.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/theme-BsMq4Y1r.js">
+    <link rel="stylesheet" crossorigin href="./assets/theme-DXhQ2ufo.css">
+    <link rel="stylesheet" crossorigin href="./assets/overlay-BakV_7dO.css">
+  </head>
+  <body data-mode="closed">
+    <div class="ov-root" id="root">
+      <!-- the dimmed game behind the panel; a click on it closes the overlay -->
+      <div class="ov-dim" id="dim"></div>
+
+      <!-- call HUD: heads of the people in the call, top-left; the frame lights up when someone speaks -->
+      <aside class="ov-hud" id="hud" aria-live="polite"></aside>
+
+      <div class="ov-stage" id="stage">
+        <div class="ov" id="ov">
+          <div class="ov-main">
+            <header class="ov-head">
+              <div class="ov-brand">
+                <svg width="30" height="30" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+                  <path d="M24 3l18 10.2v21.6L24 45 6 34.8V13.2L24 3z" stroke="var(--cyan)" stroke-width="2.4" stroke-linejoin="round" />
+                  <path d="M24 3v21m0 0l18-10.8M24 24L6 13.2" stroke="var(--accent)" stroke-width="2.2" stroke-linejoin="round" />
+                  <path d="M24 24v21" stroke="var(--teal)" stroke-width="2.2" />
+                  <path d="M24 14l8 4.6v9.2L24 32.4l-8-4.6v-9.2L24 14z" fill="var(--accent)" fill-opacity=".28" />
+                </svg>
+                <div class="ov-brand__text">
+                  <span class="ov-wordmark">Chald<span>Overlay</span></span>
+                  <span class="ov-sub" id="sub">подключение…</span>
+                </div>
+              </div>
+              <div class="ov-tools">
+                <button class="ov-icon" type="button" data-act="refresh" title="Обновить" aria-label="Обновить">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 5v5h-5M4 19v-5h5M5.6 9A8 8 0 0118.4 7L20 10M18.4 15A8 8 0 015.6 17L4 14" /></svg>
+                </button>
+                <button class="ov-icon ov-icon--close" type="button" data-act="hide" title="Закрыть (Esc)" aria-label="Закрыть">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                </button>
+              </div>
+            </header>
+
+            <nav class="ov-tabs" role="tablist">
+              <button class="ov-tab is-active" type="button" role="tab" data-tab="friends" aria-selected="true">
+                Друзья <span class="ov-count" id="cnt-friends">0</span>
+              </button>
+              <button class="ov-tab" type="button" role="tab" data-tab="invites" aria-selected="false">
+                Инвайты <span class="ov-count ov-count--hot" id="cnt-invites">0</span>
+              </button>
+            </nav>
+
+            <main class="ov-body" id="body"></main>
+
+            <section class="ov-call" id="call" hidden></section>
+
+            <footer class="ov-foot">
+              <span><kbd id="k1">Ctrl</kbd><kbd>Shift</kbd><kbd>O</kbd> показать / скрыть</span>
+              <span class="ov-foot__sp"></span>
+              <span><kbd>Esc</kbd> закрыть</span>
+            </footer>
+          </div>
+
+          <div class="ov-sheet" id="sheet" hidden></div>
+          <div class="ov-toast" id="toast" role="status" aria-live="polite"></div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

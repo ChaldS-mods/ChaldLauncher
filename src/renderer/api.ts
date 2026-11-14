@@ -4,6 +4,7 @@ declare global {
   interface Window {
     chald: {
       setZoom?(factor: number): void;
+      pathForFile?(file: File): string;
       invoke(channel: string, arg?: unknown): Promise<unknown>;
       on(channel: string, cb: (payload: unknown) => void): () => void;
     };

@@ -8,6 +8,7 @@ import {
 import { AppError } from './errors';
 import { INSTANCE_ID_RE, resolveInside, slugify } from './paths';
 import { exists, readJson, writeJsonAtomic } from './storage';
+import { kindAfterChange } from './versionChange';
 
 const COVER_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp']);
 const MAX_COVER_BYTES = 1024 * 1024;
@@ -23,6 +24,17 @@ export class InstanceStore {
    * @param versionsDir shared directory with version jsons and client jars
    */
   constructor(private getRoot: () => Promise<string>, private versionsDir: string) {}
+
+  /** Read-modify-write of one instance.json must not interleave (play time is saved while the game runs). */
+  private chains = new Map<string, Promise<unknown>>();
+  private withLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.chains.get(id) ?? Promise.resolve();
+    const run = prev.then(fn, fn);
+    const tail = run.catch(() => undefined);
+    this.chains.set(id, tail);
+    void tail.then(() => { if (this.chains.get(id) === tail) this.chains.delete(id); });
+    return run;
+  }
 
   private async dir(id: string): Promise<string> {
     if (!INSTANCE_ID_RE.test(id)) throw new AppError('INSTANCE_ID', 'Некорректный ID инстанса');
@@ -47,6 +59,22 @@ export class InstanceStore {
 
   async gameDir(id: string): Promise<string> {
     return path.join(await this.dir(id), '.minecraft');
+  }
+
+
+  /** World folder names under .minecraft/saves (directories only). */
+  async listWorlds(id: string): Promise<string[]> {
+    const gameDir = await this.gameDir(id);
+    const saves = path.join(gameDir, 'saves');
+    try {
+      const entries = await fs.readdir(saves, { withFileTypes: true });
+      return entries
+        .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+        .map((e) => e.name)
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    } catch {
+      return [];
+    }
   }
 
   async list(ctx: InstanceCtx): Promise<InstanceView[]> {
@@ -167,20 +195,52 @@ export class InstanceStore {
     const p = updateInstanceSchema.safeParse(patch);
     if (!p.success) throw new AppError('INSTANCE_INVALID', p.error.issues[0]?.message ?? 'Некорректные данные');
     const upd: UpdateInstanceInput = p.data;
-    const meta = await this.readMeta(id);
-    if (upd.name !== undefined) meta.name = upd.name;
-    if (upd.description !== undefined) meta.description = upd.description;
-    if (upd.kind !== undefined) meta.kind = upd.kind as InstanceKind;
-    if (upd.coverColor !== undefined) meta.coverColor = upd.coverColor;
-    if (upd.settings !== undefined) meta.settings = instanceSettingsSchema.parse(upd.settings);
-    await this.writeMeta(meta);
+    const meta = await this.withLock(id, async () => {
+      const m = await this.readMeta(id);
+      if (upd.name !== undefined) m.name = upd.name;
+      if (upd.description !== undefined) m.description = upd.description;
+      if (upd.kind !== undefined) m.kind = upd.kind as InstanceKind;
+      if (upd.coverColor !== undefined) m.coverColor = upd.coverColor;
+      if (upd.settings !== undefined) m.settings = instanceSettingsSchema.parse(upd.settings);
+      await this.writeMeta(m);
+      return m;
+    });
     return this.toView(meta, ctx);
   }
 
-  async patchInternal(id: string, patch: Partial<Pick<InstanceMeta, 'installed' | 'versionId' | 'lastPlayedAt' | 'coverFile'>>): Promise<void> {
-    const meta = await this.readMeta(id);
-    Object.assign(meta, patch);
-    await this.writeMeta(meta);
+  async patchInternal(id: string, patch: Partial<Pick<InstanceMeta, 'installed' | 'versionId' | 'lastPlayedAt' | 'coverFile' | 'importedFrom'>>): Promise<void> {
+    await this.withLock(id, async () => {
+      const meta = await this.readMeta(id);
+      Object.assign(meta, patch);
+      await this.writeMeta(meta);
+    });
+  }
+
+  /** Adds time the game has run (seconds). Called while it runs and when it exits. */
+  async addPlayTime(id: string, seconds: number): Promise<void> {
+    if (!Number.isFinite(seconds) || seconds <= 0) return;
+    const add = Math.min(Math.floor(seconds), 86_400);
+    await this.withLock(id, async () => {
+      const meta = await this.readMeta(id);
+      meta.playTimeSec = (meta.playTimeSec ?? 0) + add;
+      await this.writeMeta(meta);
+    });
+  }
+
+  /**
+   * Records that the instance now runs another Minecraft version / loader. Called only after the new version is fully
+   * installed, so a failed switch leaves the instance exactly as it was.
+   */
+  async applyVersion(id: string, t: { mcVersion: string; loader: InstanceMeta['loader']; versionId: string }): Promise<void> {
+    await this.withLock(id, async () => {
+      const meta = await this.readMeta(id);
+      meta.mcVersion = t.mcVersion;
+      meta.loader = { type: t.loader.type, version: t.loader.type === 'vanilla' ? null : t.loader.version };
+      meta.versionId = t.versionId;
+      meta.installed = true;
+      meta.kind = kindAfterChange(meta.kind, t.loader.type);
+      await this.writeMeta(meta);
+    });
   }
 
   async duplicate(id: string, name: string, ctx: InstanceCtx): Promise<InstanceView> {
@@ -192,7 +252,7 @@ export class InstanceStore {
     const from = await this.dir(id);
     const to = resolveInside(root, newId);
     await fs.cp(from, to, { recursive: true, errorOnExist: true });
-    const meta: InstanceMeta = { ...src, id: newId, name: trimmed, createdAt: new Date().toISOString(), lastPlayedAt: null };
+    const meta: InstanceMeta = { ...src, id: newId, name: trimmed, createdAt: new Date().toISOString(), lastPlayedAt: null, playTimeSec: 0 };
     await this.writeMeta(meta);
     return this.toView(meta, ctx);
   }

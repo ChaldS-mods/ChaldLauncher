@@ -44,6 +44,16 @@ export function formatSize(bytes: number, t: (k: string) => string = translate):
   return `${(bytes / 1048576).toFixed(1)} ${t('common.mb')}`;
 }
 
+/** Total play time: «12 h 35 min», «45 min», «less than a minute»; «—» when nothing has been played. */
+export function formatPlayTime(seconds: number | undefined, t: (k: string, v?: Record<string, string | number>) => string = translate): string {
+  const total = Math.max(0, Math.floor(Number.isFinite(seconds) ? (seconds as number) : 0));
+  if (total === 0) return '—';
+  if (total < 60) return t('time.lessMinute');
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  return h > 0 ? t('time.hm', { h, m }) : t('time.m', { m });
+}
+
 export function numOrNull(s: string): number | null {
   const trimmed = s.trim();
   if (trimmed === '') return null;

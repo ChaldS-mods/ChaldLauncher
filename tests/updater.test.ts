@@ -5,7 +5,8 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { OpProgress } from '../src/shared/types';
 import { fitWindowSize } from '../src/main/windowSize';
-import { compareVersions, isOwnReleaseUrl, pickInstallerAsset, type ReleaseInfo } from '../src/main/update';
+import { compareVersions, isNoReleaseError, isOwnReleaseUrl, pickInstallerAsset, type ReleaseInfo } from '../src/main/update';
+import { AppError } from '../src/main/errors';
 import { Updater, type UpdaterDeps } from '../src/main/updater';
 import { appSettingsSchema } from '../src/shared/schemas';
 import { DEFAULT_SETTINGS } from '../src/main/settings';
@@ -37,6 +38,19 @@ describe('update helpers', () => {
     expect(pickInstallerAsset(release().assets, 'linux')).toBeNull();
     expect(pickInstallerAsset([{ name: 'ChaldLauncher-portable.exe', size: 1, url: '', sha256: null }], 'win32')).toBeNull();
   });
+  it('on Linux picks the AppImage of the right architecture, and only when running from an AppImage', () => {
+    const assets = [
+      { name: 'ChaldLauncher-0.2.0-linux-x64.tar.gz', size: 1, url: '', sha256: null },
+      { name: 'ChaldLauncher-0.2.0-linux-arm64.AppImage', size: 2, url: '', sha256: null },
+      { name: 'ChaldLauncher-0.2.0-linux-x64.AppImage.zsync', size: 3, url: '', sha256: null },
+      { name: 'ChaldLauncher-0.2.0-linux-x64.AppImage', size: 4, url: '', sha256: null },
+    ];
+    expect(pickInstallerAsset(assets, 'linux', { appImage: true, arch: 'x64' })?.size).toBe(4);
+    expect(pickInstallerAsset(assets, 'linux', { appImage: true, arch: 'arm64' })?.size).toBe(2);
+    expect(pickInstallerAsset(assets, 'linux', { appImage: false, arch: 'x64' })).toBeNull(); // tar.gz / distro package: no self-replace
+    expect(pickInstallerAsset(assets, 'linux')).toBeNull();
+    expect(pickInstallerAsset(assets, 'darwin', { appImage: true })).toBeNull();
+  });
   it('accepts only files of the repository releases', () => {
     expect(isOwnReleaseUrl(URL_OK, REPO)).toBe(true);
     expect(isOwnReleaseUrl(URL_OK, 'someone/else')).toBe(false);
@@ -66,9 +80,10 @@ describe('Updater', () => {
   let dir: string;
   let events: OpProgress[];
   let ran: string[];
+  let launches: boolean[];
   let quit: number;
   let games: number;
-  beforeEach(async () => { dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'chald-upd-')); events = []; ran = []; quit = 0; games = 0; });
+  beforeEach(async () => { dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'chald-upd-')); events = []; ran = []; launches = []; quit = 0; games = 0; });
   afterEach(async () => { await fsp.rm(dir, { recursive: true, force: true }); });
 
   const make = (over: Partial<UpdaterDeps> = {}, rel: ReleaseInfo = release()) =>
@@ -77,7 +92,7 @@ describe('Updater', () => {
       fetchRelease: async () => rel,
       download: async (spec) => { await fsp.mkdir(path.dirname(spec.dest), { recursive: true }); await fsp.writeFile(spec.dest, BYTES); spec.size && events.length; },
       emit: (p) => events.push(p), gamesRunning: () => games,
-      runInstaller: async (f) => { ran.push(f); }, quit: () => { quit++; },
+      runInstaller: async (f, o) => { ran.push(f); launches.push(o.launch); }, quit: () => { quit++; },
       ...over,
     });
   const settle = async (u: Updater) => { for (let i = 0; i < 50 && !events.some((e) => e.status !== 'running'); i++) await new Promise((r) => setTimeout(r, 10)); return u; };
@@ -143,5 +158,92 @@ describe('Updater', () => {
     const u = make({ platform: 'linux' });
     expect((await u.check()).assetName).toBeNull();
     await expect(u.start()).rejects.toMatchObject({ code: 'UPDATE_NO_FILE' });
+  });
+
+  describe('AppImage (Linux)', () => {
+    const IMG_URL = `https://github.com/${REPO}/releases/download/v0.2.0/ChaldLauncher-0.2.0-linux-x64.AppImage`;
+    const imgRelease = () => release({ assets: [
+      { name: 'ChaldLauncher-0.2.0-linux-x64.tar.gz', size: 9, url: IMG_URL.replace('AppImage', 'tar.gz'), sha256: null },
+      { name: 'ChaldLauncher-0.2.0-linux-x64.AppImage', size: BYTES.length, url: IMG_URL, sha256: SHA },
+    ] });
+    it('downloads the AppImage and applies it with a relaunch', async () => {
+      const u = make({ platform: 'linux', appImage: '/home/u/.local/share/ChaldLauncher/ChaldLauncher.AppImage', arch: 'x64' }, imgRelease());
+      expect(await u.check()).toMatchObject({ hasUpdate: true, assetName: 'ChaldLauncher-0.2.0-linux-x64.AppImage' });
+      await u.start(); await settle(u);
+      expect(events.at(-1)).toMatchObject({ status: 'done' });
+      await u.install();
+      expect(ran).toEqual([path.join(dir, '0.2.0', 'ChaldLauncher-0.2.0-linux-x64.AppImage')]);
+      expect(launches).toEqual([true]);
+      await new Promise((r) => setTimeout(r, 450)); // install() closes the launcher after a short delay
+      expect(quit).toBe(1);
+    });
+    it('a tar.gz install (no APPIMAGE) still gets no automatic update', async () => {
+      const u = make({ platform: 'linux', appImage: null, arch: 'x64' }, imgRelease());
+      expect(await u.check()).toMatchObject({ hasUpdate: true, assetName: null });
+    });
+  });
+
+  describe('install when the launcher is closed', () => {
+    const ready = async (over: Partial<UpdaterDeps> = {}) => {
+      const u = make({ autoInstall: async () => true, ...over });
+      await u.check(); await u.start(); await settle(u);
+      return u;
+    };
+    it('applies a verified update once, without relaunching, and without scheduling a quit of its own', async () => {
+      const u = await ready();
+      expect(await u.installOnQuit()).toBe(true);
+      expect(await u.installOnQuit()).toBe(false); // already applied: never twice
+      expect(ran).toEqual([path.join(dir, '0.2.0', 'ChaldLauncher-Setup.exe')]);
+      expect(launches).toEqual([false]);
+      await new Promise((r) => setTimeout(r, 450));
+      expect(quit).toBe(0);
+    });
+    it('says in the toast that the update installs on close', async () => {
+      await ready();
+      expect(events.at(-1)?.label).toContain('при закрытии');
+    });
+    it('does nothing when the user turned it off', async () => {
+      expect(await (await ready({ autoInstall: async () => false })).installOnQuit()).toBe(false);
+      expect(ran).toHaveLength(0);
+    });
+    it('does nothing while a game is running', async () => {
+      const u = await ready();
+      games = 1;
+      expect(await u.installOnQuit()).toBe(false);
+      expect(ran).toHaveLength(0);
+    });
+    it('does nothing when the file is not downloaded yet, or no check was made', async () => {
+      const u = make({ autoInstall: async () => true });
+      await u.check(); // found, but nothing on disk
+      expect(await u.installOnQuit()).toBe(false);
+      expect(await make({ autoInstall: async () => true }).installOnQuit()).toBe(false);
+      expect(ran).toHaveLength(0);
+    });
+    it('never throws and does not block closing when the installer cannot start', async () => {
+      const u = await ready({ runInstaller: async () => { throw new AppError('UPDATE_RUN_FAILED', 'boom'); } });
+      await expect(u.installOnQuit()).resolves.toBe(false);
+    });
+    it('ignores a release that is not newer than the running launcher', async () => {
+      const u = make({ version: '0.2.0', autoInstall: async () => true });
+      await u.check();
+      await fsp.mkdir(path.join(dir, '0.2.0'), { recursive: true });
+      await fsp.writeFile(path.join(dir, '0.2.0', 'ChaldLauncher-Setup.exe'), BYTES); // even a valid file lying around
+      expect(await u.installOnQuit()).toBe(false);
+      expect(ran).toHaveLength(0);
+    });
+  });
+
+  describe('repository without releases', () => {
+    it('is "nothing to update to", not an error', async () => {
+      const u = make({ fetchRelease: async () => { throw new AppError('HTTP_ERROR', 'HTTP 404 от api.github.com'); } });
+      expect(await u.check()).toMatchObject({ configured: true, latest: null, hasUpdate: false, downloaded: false });
+      await expect(u.start()).rejects.toMatchObject({ code: 'UPDATE_NO_FILE' });
+    });
+    it('other failures are still reported', async () => {
+      const u = make({ fetchRelease: async () => { throw new AppError('HTTP_ERROR', 'HTTP 500 от api.github.com'); } });
+      await expect(u.check()).rejects.toThrow('HTTP 500');
+      expect(isNoReleaseError(new Error('HTTP 404 от api.github.com'))).toBe(true);
+      expect(isNoReleaseError(new Error('HTTP 4040 от x'))).toBe(false);
+    });
   });
 });

@@ -4,6 +4,7 @@ import { instanceSettingsSchema } from '../../shared/schemas';
 import { useI18n } from '../i18n';
 import { useStore } from '../store';
 import { memoryText, numOrNull } from '../util';
+import { JvmPresets } from './JvmPresets';
 import { MemorySliders } from './MemorySliders';
 import { Field } from './ui';
 
@@ -155,7 +156,8 @@ export function SettingsFields({
       </Field>
       <div className="form-grid__wide">
         <Field label={t('instSettings.jvm')} hint={t('instSettings.jvmHint')}>
-          <input className="input" value={draft.jvmArgs} onChange={(e) => set('jvmArgs', e.target.value)} placeholder="-XX:+UseG1GC" />
+          <JvmPresets value={draft.jvmArgs} onChange={(args) => set('jvmArgs', args)} />
+          <input className="input" style={{ marginTop: 8 }} value={draft.jvmArgs} onChange={(e) => set('jvmArgs', e.target.value)} placeholder="-XX:+UseG1GC" />
         </Field>
       </div>
     </div>

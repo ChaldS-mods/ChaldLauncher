@@ -41,6 +41,10 @@ export interface InstanceMeta {
   coverColor: number;
   coverFile: string | null;
   settings: InstanceSettings;
+  /** set when the instance was imported from another launcher: «<launcher>:<source folder>» */
+  importedFrom?: string;
+  /** total time the game has run from this instance, in seconds */
+  playTimeSec?: number;
 }
 
 export interface InstanceView extends InstanceMeta {
@@ -68,8 +72,10 @@ export interface AppSettings {
   fullscreen: boolean;
   closeBehavior: 'quit' | 'minimize-while-playing';
   checkUpdates: boolean;
-  /** download a found update in the background (the install still needs a click) */
+  /** download a found update in the background */
   autoDownloadUpdates: boolean;
+  /** install a downloaded update by itself when the launcher is closed (no click needed) */
+  autoInstallUpdates: boolean;
   /** empty: the launcher's own repository (DEFAULT_UPDATE_REPO) */
   updateRepo: string;
   /** short sounds when buttons are pressed */
@@ -121,7 +127,12 @@ export interface AppSettings {
   lastInstanceId: string | null;
   /** UI language: en | ru | kk | be */
   language: 'en' | 'ru' | 'kk' | 'be';
+  /** the first-run offer to import instances from other launchers was shown (or dismissed) */
+  launcherImportSeen: boolean;
+  /** Chald Friends server base URL (fixed to https://chaldserver.dynmap.xyz) */
+  friendsServerUrl: string;
 }
+
 
 export interface AppInfo {
   version: string;
@@ -174,6 +185,14 @@ export interface GameStatusEvent {
   instanceId: string;
   status: 'running' | 'exited' | 'crashed';
   exitCode: number | null;
+}
+
+/** Something the player should be told about a launch (shown as a toast). */
+export interface GameNoticeEvent {
+  instanceId: string;
+  /** the licence servers were unreachable: the game starts offline under the same name and UUID */
+  kind: 'offline-fallback';
+  name: string;
 }
 
 export interface GameLogEvent {
@@ -229,14 +248,14 @@ export interface UpdateInfo {
   latest: string | null;
   url: string | null;
   hasUpdate: boolean;
-  /** installer file of the new version (Windows .exe); null: nothing to download for this platform */
+  /** file of the new version (Windows installer .exe, Linux .AppImage); null: nothing to download for this platform */
   assetName: string | null;
   /** the installer is downloaded and verified, ready to run */
   downloaded: boolean;
   downloading: boolean;
 }
 
-export type ModrinthType = 'mod' | 'modpack' | 'resourcepack';
+export type ModrinthType = 'mod' | 'modpack' | 'resourcepack' | 'shader' | 'datapack';
 export type ModrinthSort = 'relevance' | 'downloads' | 'follows' | 'newest' | 'updated';
 
 export interface ModrinthSearchInput {
@@ -311,6 +330,56 @@ export interface ModrinthSearchResult {
   offset: number;
 }
 
+export type CurseForgeClass = 'mod' | 'modpack' | 'resourcepack' | 'shader' | 'datapack';
+export type CurseForgeSort = 'featured' | 'popularity' | 'lastUpdated' | 'name' | 'totalDownloads';
+
+export interface CurseForgeHit {
+  id: number;
+  slug: string;
+  title: string;
+  description: string;
+  author: string;
+  downloads: number;
+  type: CurseForgeClass;
+  iconDataUrl: string | null;
+  websiteUrl: string | null;
+}
+
+export interface CurseForgeProjectInfo {
+  id: number;
+  slug: string;
+  title: string;
+  description: string;
+  bodyHtml: string;
+  author: string;
+  downloads: number;
+  type: CurseForgeClass;
+  iconDataUrl: string | null;
+  websiteUrl: string | null;
+  updated: string | null;
+  gameVersions: string[];
+  loaders: string[];
+}
+
+export interface CurseForgeFileInfo {
+  id: number;
+  fileName: string;
+  displayName: string;
+  size: number;
+  downloads: number;
+  published: string;
+  releaseType: 'release' | 'beta' | 'alpha';
+  gameVersions: string[];
+  downloadUrl: string | null;
+  sha1: string | null;
+}
+
+export interface CurseForgeSearchResult {
+  hits: CurseForgeHit[];
+  total: number;
+  offset: number;
+}
+
 export interface SkinEntry {
   id: string;
   name: string;
@@ -330,6 +399,126 @@ export interface SkinImportResult {
   added: SkinEntry[];
   /** one line per file that was not added (wrong size, not a PNG, already in the wardrobe, ...) */
   problems: string[];
+}
+
+/** Official cape owned by the Microsoft account (from /minecraft/profile). */
+export interface AccountCape {
+  id: string;
+  /** Human-readable name from Mojang (e.g. "Minecon2012", "Migrator") */
+  alias: string;
+  /** https texture URL */
+  url: string;
+  state: 'ACTIVE' | 'INACTIVE';
+  /** PNG preview as data URL; empty string until the texture finishes loading in the background */
+  dataUrl: string;
+}
+
+export interface CapeListResult {
+  capes: AccountCape[];
+  /** id of the currently active cape, or null if none */
+  activeId: string | null;
+}
+
+/** Public profile on the Chald Friends server */
+export interface ChaldUser {
+  id: number;
+  chaldId: string;
+  mcUuid: string;
+  mcName: string;
+  displayName: string;
+  bio: string;
+  online: boolean;
+  /** launcher | game | idle | offline */
+  presence: string;
+  /** e.g. instance name when playing */
+  activity: string;
+  lastSeen: number;
+  createdAt: number;
+  /** true when the friends server has a stored PNG head for this user */
+  hasAvatar?: boolean;
+  token?: string;
+  requestId?: number;
+}
+
+/**
+ * Microsoft (online-mode) UUIDs are random v4; offline-mode names get a v3 UUID from
+ * `OfflinePlayer:<name>`. Used to decide whether mc-heads / skin services will return a real skin.
+ */
+export function isLicensedUuid(uuid: string | undefined | null): boolean {
+  if (!uuid) return false;
+  const u = uuid.replace(/-/g, '').toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(u)) return false;
+  return u[12] === '4';
+}
+
+/** Prefer the real skin for licensed accounts (UUID), otherwise fall back to the name / Steve. */
+export function mcHeadUrl(name: string | undefined | null, uuid?: string | null, size = 64): string {
+  if (uuid && isLicensedUuid(uuid)) {
+    return `https://mc-heads.net/avatar/${uuid.replace(/-/g, '')}/${size}`;
+  }
+  const n = (name || 'MHF_Steve').trim() || 'MHF_Steve';
+  return `https://mc-heads.net/avatar/${encodeURIComponent(n)}/${size}`;
+}
+
+export interface ChaldFriendsList {
+  friends: ChaldUser[];
+  incoming: ChaldUser[];
+  outgoing: ChaldUser[];
+}
+
+export interface ChaldSessionResult {
+  user: ChaldUser;
+  created: boolean;
+}
+
+export interface ChaldMessage {
+  id: number;
+  fromUserId: number;
+  /** DM peer; 0 / omitted in group messages */
+  toUserId: number;
+  /** set when the message belongs to a group chat */
+  groupId?: number | null;
+  body: string;
+  createdAt: number;
+  mine: boolean;
+  readAt: number | null;
+  /** text | image | share (older servers omit it) */
+  kind?: string;
+  /** JSON string or object, used by `share` messages */
+  meta?: string | Record<string, unknown> | null;
+  /** display name of the sender (group threads) */
+  fromName?: string;
+  /** mc name / uuid of the sender for avatars in group threads */
+  fromMcName?: string;
+  fromMcUuid?: string;
+}
+
+export interface ChaldConversation {
+  user: {
+    id: number;
+    chaldId: string;
+    mcName: string;
+    mcUuid?: string;
+    displayName: string;
+    online: boolean;
+    presence: string;
+    activity: string;
+  };
+  lastMessage: ChaldMessage | null;
+  unread: number;
+}
+
+/** Group chat on the Chald Friends server */
+export interface ChaldGroup {
+  id: number;
+  name: string;
+  ownerId: number;
+  /** member user ids (including owner) */
+  memberIds: number[];
+  members?: ChaldUser[];
+  lastMessage?: ChaldMessage | null;
+  unread?: number;
+  createdAt: number;
 }
 
 export interface ChaldPackSummary {

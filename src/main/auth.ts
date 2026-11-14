@@ -27,6 +27,21 @@ const TENANT = 'https://login.microsoftonline.com/consumers/oauth2/v2.0';
 
 interface TokenResponse { access_token: string; refresh_token?: string; error?: string; error_description?: string }
 
+/** A server answered with an outage or a rate limit (not with «no» to this account). */
+const isOutage = (status: number): boolean => status >= 500 || status === 429;
+
+/**
+ * True when the licence servers (Microsoft / Xbox / Minecraft) could not be reached or are down.
+ * A refused account (revoked session, no game, child account…) is NOT an outage.
+ */
+export function isLicenseServerDown(e: unknown): boolean {
+  return e instanceof AppError && (e.code === 'NET_FAILED' || e.code === 'AUTH_UNAVAILABLE');
+}
+
+function outage(host: string, status: number): AppError {
+  return new AppError('AUTH_UNAVAILABLE', `Серверы входа сейчас недоступны (HTTP ${status}, ${host}). Попробуй позже.`);
+}
+
 async function form<T>(url: string, body: Record<string, string>, purpose: string, signal?: AbortSignal): Promise<T> {
   const { res, entry } = await netRequest(url, {
     method: 'POST',
@@ -37,7 +52,13 @@ async function form<T>(url: string, body: Record<string, string>, purpose: strin
   });
   const text = await res.text();
   entry.bytes = Buffer.byteLength(text);
-  return JSON.parse(text) as T;
+  if (isOutage(res.status)) throw outage(entry.host, res.status);
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    // an error page instead of JSON: the service is having problems
+    throw outage(entry.host, res.status);
+  }
 }
 
 async function postJson<T>(url: string, body: unknown, purpose: string, signal?: AbortSignal, token?: string): Promise<T> {
@@ -51,6 +72,7 @@ async function postJson<T>(url: string, body: unknown, purpose: string, signal?:
   const text = await res.text();
   entry.bytes = Buffer.byteLength(text);
   if (!res.ok) {
+    if (isOutage(res.status)) throw outage(entry.host, res.status);
     let xerr: number | undefined;
     try { xerr = (JSON.parse(text) as { XErr?: number }).XErr; } catch { /* not json */ }
     throw new AppError('AUTH_HTTP', xboxError(xerr) ?? `Ошибка авторизации (HTTP ${res.status}, ${entry.host})`);
@@ -93,6 +115,7 @@ async function minecraftLogin(msToken: string, signal?: AbortSignal): Promise<Se
   const text = await res.text();
   entry.bytes = Buffer.byteLength(text);
   if (res.status === 404) throw new AppError('AUTH_NO_GAME', 'На этом аккаунте нет Minecraft Java Edition. Игра должна быть куплена.');
+  if (isOutage(res.status)) throw outage(entry.host, res.status);
   if (!res.ok) throw new AppError('AUTH_HTTP', `Не удалось получить профиль Minecraft (HTTP ${res.status})`);
   const profile = JSON.parse(text) as { id: string; name: string };
   const uuid = profile.id.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
@@ -304,8 +327,14 @@ export class AuthService {
     return this.notify();
   }
 
-  /** Used only by the main process when launching the game. The token never goes to the renderer. */
-  async getLaunchAuth(): Promise<LaunchAuth> {
+  /**
+   * Used only by the main process when launching the game. The token never goes to the renderer.
+   *
+   * With `offlineFallback`, when the licence servers cannot be reached the game still starts: offline, under the SAME name
+   * and UUID as the licensed account (taken from the last successful sign-in), so singleplayer worlds and data match.
+   * This needs an earlier sign-in; a refused account (revoked session, no game…) is still an error.
+   */
+  async getLaunchAuth(opts: { offlineFallback?: boolean } = {}): Promise<LaunchAuth> {
     await this.load();
     const cfg = await this.getConfig();
     if (cfg.mode === 'offline') {
@@ -320,13 +349,24 @@ export class AuthService {
     }
     if (!this.stored?.refreshToken) throw new AppError('AUTH_REQUIRED', 'Войди в аккаунт Microsoft, чтобы запустить игру.');
     const clientId = this.stored.clientId || cfg.msClientId;
-    const t = await form<TokenResponse>(`${TENANT}/token`, {
-      grant_type: 'refresh_token', client_id: clientId, refresh_token: this.stored.refreshToken, scope: SCOPE,
-    }, 'Вход Microsoft: обновление сессии');
-    if (!t.access_token) throw new AppError('AUTH_REQUIRED', 'Сессия истекла. Войди в аккаунт заново.');
-    this.session = await minecraftLogin(t.access_token);
-    this.stored = { ...this.stored, refreshToken: t.refresh_token ?? this.stored.refreshToken, uuid: this.session.uuid, name: this.session.name };
-    await this.persist();
-    return { name: this.session.name, uuid: this.session.uuid, accessToken: this.session.accessToken, userType: 'msa' };
+    try {
+      const t = await form<TokenResponse>(`${TENANT}/token`, {
+        grant_type: 'refresh_token', client_id: clientId, refresh_token: this.stored.refreshToken, scope: SCOPE,
+      }, 'Вход Microsoft: обновление сессии');
+      if (!t.access_token) throw new AppError('AUTH_REQUIRED', 'Сессия истекла. Войди в аккаунт заново.');
+      this.session = await minecraftLogin(t.access_token);
+      this.stored = { ...this.stored, refreshToken: t.refresh_token ?? this.stored.refreshToken, uuid: this.session.uuid, name: this.session.name };
+      await this.persist();
+      return { name: this.session.name, uuid: this.session.uuid, accessToken: this.session.accessToken, userType: 'msa' };
+    } catch (e) {
+      if (!opts.offlineFallback || !isLicenseServerDown(e)) throw e;
+      // the token we already have is still good for a while: use it as it is
+      if (this.session && this.session.expiresAt > Date.now() + 60_000) {
+        return { name: this.session.name, uuid: this.session.uuid, accessToken: this.session.accessToken, userType: 'msa' };
+      }
+      const { name, uuid } = this.stored;
+      if (!name || !uuid) throw e;
+      return { name, uuid, accessToken: '0', userType: 'legacy', offlineFallback: true };
+    }
   }
 }

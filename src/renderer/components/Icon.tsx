@@ -30,6 +30,13 @@ const P: Record<string, string> = {
   shield: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z',
   shirt: 'M8 3L3 6.5l2.2 4L7 9.6V21h10V9.6l1.8.9 2.2-4L16 3c-.4 2-2 3.2-4 3.2S8.4 5 8 3z',
   wrench: 'M14 6a4 4 0 005 5l-9 9a2 2 0 01-3-3l9-9a4 4 0 00-2-2z',
+  phone: 'M5 4h3.5l1.8 4.5-2.3 1.5a11 11 0 005 5l1.5-2.3L19 14.5V18a2 2 0 01-2 2A14 14 0 013 6a2 2 0 012-2z',
+  mail: 'M3 5.5h18v13H3zM3 7.5l9 6.5 9-6.5',
+  package: 'M21 8l-9-5-9 5v8l9 5 9-5V8zM3 8l9 5 9-5M12 13v8M7.5 5.5l9 5',
+  overlay: 'M3 5h18v14H3zM14 9h4v6h-4zM6 9h5M6 12h5M6 15h3',
+  send: 'M4 12l16-8-6 16-3-7-7-1zM11 13l9-9',
+  photo: 'M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M9 9.5h.01',
+  clock: 'M12 3a9 9 0 100 18 9 9 0 000-18zM12 7v5l3.5 2',
 };
 
 export function Icon({ name, size = 18 }: { name: keyof typeof P | string; size?: number }) {

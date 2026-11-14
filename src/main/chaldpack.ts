@@ -26,16 +26,23 @@ const CONTENT_FILE = /\.(jar|zip)(\.disabled)?$/i;
 
 /** Top-level folders of .minecraft that are never exported. */
 const SKIP_DIRS = new Set(['logs', 'crash-reports', 'screenshots', '.fabric', '.mixin.out', 'webcache', 'webcache2', 'downloads', 'debug', '.cache']);
-const SKIP_FILES = new Set(['.chald-modrinth.json']);
+const SKIP_FILES = new Set(['.chald-modrinth.json', '.chald-curseforge.json']);
+
+const ALLOWED_CDN_HOSTS = new Set([
+  'cdn.modrinth.com',
+  'edge.forgecdn.net',
+  'media.forgecdn.net',
+  'mediafilez.forgecdn.net',
+]);
 
 const cdnUrl = z.string().url().max(2048).refine((u) => {
   try {
     const x = new URL(u);
-    return x.protocol === 'https:' && x.hostname === 'cdn.modrinth.com';
+    return x.protocol === 'https:' && ALLOWED_CDN_HOSTS.has(x.hostname);
   } catch {
     return false;
   }
-}, 'Ссылка на файл ведёт не на cdn.modrinth.com');
+}, 'Ссылка на файл должна вести на CDN Modrinth или CurseForge');
 
 export const chaldPackSchema = z.object({
   format: z.literal('chaldlauncher-instance'),
@@ -47,12 +54,15 @@ export const chaldPackSchema = z.object({
   kind: z.enum(['official', 'modded', 'custom']),
   coverColor: z.number().int().min(0).max(7).default(0),
   files: z.array(z.object({
-    path: z.string().min(1).max(300).regex(/^(mods|resourcepacks)\/[^/]+$/, 'Файлы Modrinth лежат только в mods/ и resourcepacks/'),
+    path: z.string().min(1).max(300).regex(/^(mods|resourcepacks)\/[^/]+$/, 'Файлы лежат только в mods/ и resourcepacks/'),
     sha1: z.string().regex(/^[0-9a-fA-F]{40}$/),
     size: z.number().int().nonnegative().optional(),
     url: cdnUrl,
-    projectId: z.string().regex(/^[A-Za-z0-9]{8}$/),
-    versionId: z.string().regex(/^[A-Za-z0-9]{8}$/),
+    /** modrinth project id (8 chars) or curseforge mod id as decimal string */
+    projectId: z.string().min(1).max(32),
+    /** modrinth version id or curseforge file id as decimal string */
+    versionId: z.string().min(1).max(32),
+    source: z.enum(['modrinth', 'curseforge']).default('modrinth'),
   })).max(5000),
 });
 export type ChaldPack = z.infer<typeof chaldPackSchema>;
@@ -201,7 +211,7 @@ async function identifyOutsideFiles(o: ExportOptions, already: Set<string>, noti
       const url = f ? cdnUrl.safeParse(f.url) : null;
       if (!f || !url?.success || !/^[A-Za-z0-9]{8}$/.test(v.project_id) || !/^[A-Za-z0-9]{8}$/.test(v.id)) continue;
       for (const rel of byHash.get(h) ?? []) {
-        out.push({ path: rel, sha1: h, size: f.size, url: f.url, projectId: v.project_id, versionId: v.id });
+        out.push({ path: rel, sha1: h, size: f.size, url: f.url, projectId: v.project_id, versionId: v.id, source: 'modrinth' });
       }
     }
     o.report(`Ищу на Modrinth: ${Math.min(i + IDENTIFY_BATCH, hashes.length)} из ${hashes.length}`, frac(i + IDENTIFY_BATCH));
@@ -211,9 +221,9 @@ async function identifyOutsideFiles(o: ExportOptions, already: Set<string>, noti
   // say which files stayed in the archive, so "why is the pack big" has a visible answer
   const found = new Set(out.map((f) => f.path));
   const missing = candidates.filter((rel) => !found.has(rel));
+  // remaining files are tried on CurseForge next; only note Modrinth misses briefly
   if (missing.length) {
-    notices.push(`Не найдено на Modrinth по хешу (${missing.length} из ${candidates.length}), эти файлы положены в архив целиком.`);
-    for (const rel of missing.slice(0, 40)) notices.push(`В архиве: ${rel}`);
+    notices.push(`Modrinth: не найдено по хешу ${missing.length} из ${candidates.length} — пробую CurseForge…`);
   }
   return out;
 }
@@ -227,8 +237,108 @@ export interface ExportOptions {
     /** SHA-1 → Modrinth version. Lets the export recognise mods that were put into the folder by hand. */
     identify?: (hashes: string[], signal?: AbortSignal) => Promise<Record<string, MrVersionDetail>>;
   };
+  /** Optional CurseForge API: fingerprints for jars not found on Modrinth */
+  cfApi?: {
+    identifyByFingerprints: (fingerprints: number[], signal?: AbortSignal) => Promise<Map<number, import('./curseforge').CfFingerprintMatch>>;
+    resolveDownloadUrl: (file: { id: number; fileName: string; downloadUrl: string | null }) => string;
+  };
   report: (label: string, fraction: number) => void;
   signal?: AbortSignal;
+}
+
+
+/**
+ * Jars not resolved on Modrinth: CurseForge fingerprints via /v1/fingerprints.
+ */
+async function identifyOutsideFilesCf(
+  o: ExportOptions,
+  already: Set<string>,
+  notices: string[],
+): Promise<ChaldPack['files']> {
+  const cf = o.cfApi;
+  if (!cf) return [];
+  const { cfFingerprint } = await import('./curseforge.js');
+  const candidates: string[] = [];
+  for (const dir of CONTENT_DIRS) {
+    let dirents;
+    try {
+      dirents = await fs.readdir(path.join(o.gameDir, dir), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const d of dirents) {
+      if (!d.isFile() || d.isSymbolicLink() || !CONTENT_FILE.test(d.name) || d.name.length > 250) continue;
+      const rel = `${dir}/${d.name}`;
+      if (!already.has(rel)) candidates.push(rel);
+    }
+  }
+  if (!candidates.length) return [];
+
+  const byFp = new Map<number, { rel: string; sha1: string; size: number }[]>();
+  let done = 0;
+  for (const rel of candidates) {
+    if (o.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    o.report(`CF-отпечаток: ${baseName(rel)} (${done + 1} из ${candidates.length})`, 0.48 + (done / candidates.length) * 0.05);
+    try {
+      const abs = path.join(o.gameDir, rel);
+      const buf = await fs.readFile(abs);
+      const fp = cfFingerprint(buf);
+      const sha1 = (await sha1Of(abs)).toLowerCase();
+      const list = byFp.get(fp) ?? [];
+      list.push({ rel, sha1, size: buf.length });
+      byFp.set(fp, list);
+    } catch {
+      // leave in archive
+    }
+    done++;
+  }
+
+  const fps = [...byFp.keys()];
+  o.report(`Ищу на CurseForge: ${fps.length} файлов…`, 0.53);
+  let matches: Map<number, import('./curseforge').CfFingerprintMatch>;
+  try {
+    matches = await cf.identifyByFingerprints(fps, o.signal);
+  } catch (e) {
+    if (o.signal?.aborted) throw e;
+    notices.push(`CurseForge fingerprint lookup failed: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
+    return [];
+  }
+
+  const out: ChaldPack['files'] = [];
+  for (const [fp, files] of byFp) {
+    const m = matches.get(fp);
+    if (!m) continue;
+    let url = m.downloadUrl;
+    if (!url) {
+      url = cf.resolveDownloadUrl({
+        id: m.fileId,
+        fileName: m.fileName,
+        downloadUrl: m.downloadUrl,
+      });
+    }
+    const parsed = cdnUrl.safeParse(url);
+    if (!parsed.success) continue;
+    for (const f of files) {
+      out.push({
+        path: f.rel,
+        sha1: f.sha1,
+        size: m.size || f.size,
+        url: parsed.data,
+        projectId: String(m.modId),
+        versionId: String(m.fileId),
+        source: 'curseforge',
+      });
+    }
+  }
+
+  const found = new Set(out.map((x) => x.path));
+  const missing = candidates.filter((rel) => !found.has(rel));
+  if (out.length) notices.push(`CurseForge: найдено по отпечатку ${out.length} файл(ов).`);
+  if (missing.length) {
+    notices.push(`Не найдено на Modrinth/CurseForge (${missing.length}), эти файлы в архиве.`);
+    for (const rel of missing.slice(0, 30)) notices.push(`В архиве: ${rel}`);
+  }
+  return out;
 }
 
 export async function exportInstance(o: ExportOptions): Promise<ExportResult> {
@@ -266,7 +376,7 @@ export async function exportInstance(o: ExportOptions): Promise<ExportResult> {
       const f = version.files.find((x) => x.filename === name);
       const parsed = f ? cdnUrl.safeParse(f.url) : null;
       if (version.project_id === projectId && f && parsed?.success && f.hashes.sha1?.toLowerCase() === local) {
-        downloads.push({ path: found, sha1: local, size: f.size, url: f.url, projectId, versionId: info.versionId });
+        downloads.push({ path: found, sha1: local, size: f.size, url: f.url, projectId, versionId: info.versionId, source: 'modrinth' });
         downloaded.add(found);
       } else {
         notices.push(`Файл отличается от версии на Modrinth, положен в архив: ${name}`);
@@ -283,10 +393,21 @@ export async function exportInstance(o: ExportOptions): Promise<ExportResult> {
   if (o.api.identify) {
     const found = await identifyOutsideFiles(o, downloaded, notices);
     for (const d of found) {
-      downloads.push(d);
+      downloads.push({ ...d, source: 'modrinth' as const });
       downloaded.add(d.path);
     }
     identified = found.length;
+  }
+  // 1c. remaining jars: try CurseForge fingerprints
+  let identifiedCf = 0;
+  if (o.cfApi) {
+    const foundCf = await identifyOutsideFilesCf(o, downloaded, notices);
+    for (const d of foundCf) {
+      downloads.push(d);
+      downloaded.add(d.path);
+    }
+    identifiedCf = foundCf.length;
+    identified += identifiedCf;
   }
   downloads.sort((a, b) => a.path.localeCompare(b.path));
 
@@ -399,7 +520,20 @@ export function packToPlan(m: ChaldPack): PackPlan {
 export function installedIndexFor(m: ChaldPack): { projects: Record<string, { file: string; versionId: string }> } {
   const projects: Record<string, { file: string; versionId: string }> = {};
   for (const f of m.files) {
+    if ((f.source ?? 'modrinth') !== 'modrinth') continue;
     projects[f.projectId] = { file: path.posix.basename(f.path).replace(/\.disabled$/, ''), versionId: f.versionId };
+  }
+  return { projects };
+}
+
+/** CurseForge install index for packs that reference CF downloads by link. */
+export function cfInstalledIndexFor(m: ChaldPack): { projects: Record<string, { file: string; fileId: number }> } {
+  const projects: Record<string, { file: string; fileId: number }> = {};
+  for (const f of m.files) {
+    if (f.source !== 'curseforge') continue;
+    const fileId = Number(f.versionId);
+    if (!Number.isFinite(fileId)) continue;
+    projects[f.projectId] = { file: path.posix.basename(f.path).replace(/\.disabled$/, ''), fileId };
   }
   return { projects };
 }

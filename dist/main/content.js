@@ -42,6 +42,7 @@ exports.listContent = listContent;
 exports.toggleContent = toggleContent;
 exports.removeContent = removeContent;
 exports.importContent = importContent;
+exports.readLocalModDetails = readLocalModDetails;
 const fs = __importStar(require("node:fs/promises"));
 const path = __importStar(require("node:path"));
 const adm_zip_1 = __importDefault(require("adm-zip"));
@@ -242,5 +243,100 @@ async function importContent(gameDir, kind, sources) {
         n++;
     }
     return n;
+}
+/** Reads a TOML string value: "x", 'x', """x""" or '''x'''. Multi-line strings are collapsed to single spaces. */
+function tomlString(block, key) {
+    const m = new RegExp(`^[ \\t]*${key}[ \\t]*=[ \\t]*(?:'''([\\s\\S]*?)'''|"""([\\s\\S]*?)"""|"((?:[^"\\\\\\n]|\\\\.)*)"|'([^'\\n]*)')`, 'm').exec(block);
+    const v = m?.[1] ?? m?.[2] ?? m?.[3] ?? m?.[4];
+    if (v === undefined)
+        return null;
+    const clean = v.replace(/\\n/g, ' ').replace(/\s+/g, ' ').trim();
+    return clean && !clean.includes('${') ? clean : null;
+}
+const IGNORED_DEPS = new Set(['minecraft', 'java', 'fabricloader', 'fabric-loader', 'forge', 'neoforge', 'quilt_loader', 'quilt-loader']);
+function authorsOf(v) {
+    if (typeof v === 'string')
+        return v.split(/\s*,\s*/).filter(Boolean);
+    if (Array.isArray(v))
+        return v.map((x) => (typeof x === 'string' ? x : x?.name ?? '')).filter(Boolean);
+    if (v && typeof v === 'object')
+        return Object.keys(v);
+    return [];
+}
+function parseTomlMod(text) {
+    const firstMod = text.search(/^\s*\[\[\s*mods\s*\]\]/m);
+    const top = firstMod >= 0 ? text.slice(0, firstMod) : text;
+    let mod = '';
+    if (firstMod >= 0) {
+        const rest = text.slice(firstMod).replace(/^\s*\[\[\s*mods\s*\]\][^\n]*\n/, '');
+        const next = rest.search(/^\s*\[/m);
+        mod = next >= 0 ? rest.slice(0, next) : rest;
+    }
+    const modId = tomlString(mod, 'modId');
+    const depends = [];
+    const depRe = /^\s*\[\[\s*dependencies\.[^\]]+\]\]\s*\n([\s\S]*?)(?=^\s*\[|(?![\s\S]))/gm;
+    for (const m of text.matchAll(depRe)) {
+        const id = tomlString(m[1], 'modId');
+        const mandatory = /^[ \t]*mandatory[ \t]*=[ \t]*true/m.test(m[1]) || /^[ \t]*type[ \t]*=[ \t]*["']required["']/m.test(m[1]);
+        if (id && mandatory && !IGNORED_DEPS.has(id))
+            depends.push(id);
+    }
+    return {
+        modId,
+        name: tomlString(mod, 'displayName'),
+        version: tomlString(mod, 'version'),
+        description: tomlString(mod, 'description'),
+        authors: authorsOf(tomlString(mod, 'authors') ?? tomlString(top, 'authors')),
+        license: tomlString(top, 'license'),
+        homepage: tomlString(mod, 'displayURL'),
+        depends,
+    };
+}
+/** Everything a mod jar says about itself (id, description, authors, required mods). Never throws for a broken jar. */
+async function readLocalModDetails(gameDir, file) {
+    const full = target(gameDir, 'mods', file);
+    const base = { file, loader: null, modId: null, name: null, version: null, description: null, authors: [], license: null, homepage: null, depends: [] };
+    let st;
+    try {
+        st = await fs.stat(full);
+    }
+    catch {
+        throw new errors_1.AppError('FILE_MISSING', `Файл не найден: ${file}`);
+    }
+    if (st.size > MAX_SCAN_BYTES)
+        return base;
+    try {
+        const zip = new adm_zip_1.default(full);
+        const fabric = zip.getEntry('fabric.mod.json');
+        if (fabric) {
+            const j = JSON.parse(fabric.getData().toString('utf8'));
+            return {
+                ...base, loader: 'fabric', modId: j.id ?? null, name: j.name ?? null, version: j.version ?? null, description: j.description ?? null,
+                authors: authorsOf(j.authors), license: Array.isArray(j.license) ? j.license.join(', ') : typeof j.license === 'string' ? j.license : null,
+                homepage: j.contact?.homepage ?? null, depends: Object.keys(j.depends ?? {}).filter((k) => !IGNORED_DEPS.has(k)),
+            };
+        }
+        const quilt = zip.getEntry('quilt.mod.json');
+        if (quilt) {
+            const j = JSON.parse(quilt.getData().toString('utf8'));
+            const q = j.quilt_loader;
+            return {
+                ...base, loader: 'quilt', modId: q?.id ?? null, name: q?.metadata?.name ?? null, version: q?.version ?? null,
+                description: q?.metadata?.description ?? null, authors: authorsOf(q?.metadata?.contributors),
+                license: typeof q?.metadata?.license === 'string' ? q.metadata.license : null, homepage: q?.metadata?.contact?.homepage ?? null,
+                depends: (q?.depends ?? []).map((d) => (typeof d === 'string' ? d : d.id ?? '')).filter((d) => d && !IGNORED_DEPS.has(d)),
+            };
+        }
+        for (const [entryName, loader] of [['META-INF/neoforge.mods.toml', 'neoforge'], ['META-INF/mods.toml', 'forge']]) {
+            const toml = zip.getEntry(entryName);
+            if (!toml || toml.header.size > 512 * 1024)
+                continue;
+            return { ...base, loader, ...parseTomlMod(toml.getData().toString('utf8')) };
+        }
+    }
+    catch {
+        /* unreadable jar: only the file name is known */
+    }
+    return base;
 }
 //# sourceMappingURL=content.js.map

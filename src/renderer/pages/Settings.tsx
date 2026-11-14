@@ -7,6 +7,8 @@ import { AccountSection } from '../components/AccountSection';
 import { DiscordSection } from '../components/Discord';
 import { NAV_PAGES } from '../components/Shell';
 import { Icon } from '../components/Icon';
+import { JvmPresets } from '../components/JvmPresets';
+import { LauncherIconStrip, LauncherImportDialog } from '../components/LauncherImport';
 import { MemorySliders } from '../components/MemorySliders';
 import { Field, Switch } from '../components/ui';
 import { recommendMemory } from '../../shared/memory';
@@ -20,7 +22,7 @@ import { LOCALES, useI18n, type Locale } from '../i18n';
 type Draft = {
   instancesDir: string; downloadsDir: string; javaPath: string; memAuto: boolean; min: number; max: number; jvmArgs: string;
   width: string; height: string; fullscreen: boolean; closeBehavior: AppSettings['closeBehavior'];
-  checkUpdates: boolean; autoDownload: boolean; updateRepo: string; uiSounds: boolean; soundVolume: number;
+  checkUpdates: boolean; autoDownload: boolean; autoInstall: boolean; updateRepo: string; uiSounds: boolean; soundVolume: number;
   discordRpc: boolean; discordShowInstance: boolean;
   themeBg: string; themeAccent: string; themeSecondary: string; themeHighlight: string;
   uiScale: number; cornerStyle: LookSettings['cornerStyle']; glow: number; fontMode: LookSettings['fontMode']; animations: boolean; compactSidebar: boolean;
@@ -31,7 +33,7 @@ type Draft = {
 
 const toDraft = (s: AppSettings): Draft => ({
   instancesDir: s.instancesDir, downloadsDir: s.downloadsDir, javaPath: s.javaPath, memAuto: s.memoryAuto, min: s.memoryMinMb, max: s.memoryMaxMb, jvmArgs: s.jvmArgs,
-  width: String(s.width), height: String(s.height), fullscreen: s.fullscreen, closeBehavior: s.closeBehavior, checkUpdates: s.checkUpdates, autoDownload: s.autoDownloadUpdates, updateRepo: s.updateRepo, uiSounds: s.uiSounds, soundVolume: s.soundVolume, discordRpc: s.discordRpc, discordShowInstance: s.discordShowInstance, themeBg: s.themeBg, themeAccent: s.themeAccent, themeSecondary: s.themeSecondary, themeHighlight: s.themeHighlight,
+  width: String(s.width), height: String(s.height), fullscreen: s.fullscreen, closeBehavior: s.closeBehavior, checkUpdates: s.checkUpdates, autoDownload: s.autoDownloadUpdates, autoInstall: s.autoInstallUpdates, updateRepo: s.updateRepo, uiSounds: s.uiSounds, soundVolume: s.soundVolume, discordRpc: s.discordRpc, discordShowInstance: s.discordShowInstance, themeBg: s.themeBg, themeAccent: s.themeAccent, themeSecondary: s.themeSecondary, themeHighlight: s.themeHighlight,
   uiScale: s.uiScale, cornerStyle: s.cornerStyle, glow: s.glow, fontMode: s.fontMode, animations: s.animations, compactSidebar: s.compactSidebar,
   hiddenPages: s.hiddenPages, sidebarSide: s.sidebarSide, panelSide: s.panelSide, panelWidth: s.panelWidth, showStatusBar: s.showStatusBar, customCss: s.customCss, customHtml: s.customHtml,
   dnsMode: s.dnsMode ?? 'system', dnsServers: s.dnsServers || DEFAULT_DNS_SERVERS, dnsDohUrl: s.dnsDohUrl || DEFAULT_DOH_URL,
@@ -67,6 +69,7 @@ export function SettingsPage() {
   const [tab, setTab] = useState<Tab>('general');
   const [dnsTest, setDnsTest] = useState<DnsTestResult | null>(null);
   const [dnsTesting, setDnsTesting] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   useEffect(() => { if (settings && !d) setD(toDraft(settings)); }, [settings, d]);
   useEffect(() => { void useStore.getState().refreshMemory(); }, []);
@@ -107,7 +110,7 @@ export function SettingsPage() {
   const save = async () => {
     const nums = { width: numOrNull(d.width), height: numOrNull(d.height) };
     for (const [k, v] of Object.entries(nums)) if (v === null || Number.isNaN(v)) return setError(k);
-    const next = { ...settings, instancesDir: d.instancesDir.trim(), downloadsDir: d.downloadsDir.trim(), javaPath: d.javaPath.trim(), memoryAuto: d.memAuto, memoryMinMb: d.min, memoryMaxMb: d.max, jvmArgs: d.jvmArgs, fullscreen: d.fullscreen, closeBehavior: d.closeBehavior, checkUpdates: d.checkUpdates, autoDownloadUpdates: d.autoDownload, updateRepo: d.updateRepo.trim(), uiSounds: d.uiSounds, soundVolume: d.soundVolume, discordRpc: d.discordRpc, discordShowInstance: d.discordShowInstance, themeBg: d.themeBg, themeAccent: d.themeAccent, themeSecondary: d.themeSecondary, themeHighlight: d.themeHighlight, uiScale: d.uiScale, cornerStyle: d.cornerStyle, glow: d.glow, fontMode: d.fontMode, animations: d.animations, compactSidebar: d.compactSidebar, hiddenPages: d.hiddenPages, sidebarSide: d.sidebarSide, panelSide: d.panelSide, panelWidth: d.panelWidth, showStatusBar: d.showStatusBar, customCss: d.customCss, customHtml: d.customHtml, language: d.language, dnsMode: d.dnsMode, dnsServers: d.dnsServers.trim(), dnsDohUrl: d.dnsDohUrl.trim(), ...nums };
+    const next = { ...settings, instancesDir: d.instancesDir.trim(), downloadsDir: d.downloadsDir.trim(), javaPath: d.javaPath.trim(), memoryAuto: d.memAuto, memoryMinMb: d.min, memoryMaxMb: d.max, jvmArgs: d.jvmArgs, fullscreen: d.fullscreen, closeBehavior: d.closeBehavior, checkUpdates: d.checkUpdates, autoDownloadUpdates: d.autoDownload, autoInstallUpdates: d.autoInstall, updateRepo: d.updateRepo.trim(), uiSounds: d.uiSounds, soundVolume: d.soundVolume, discordRpc: d.discordRpc, discordShowInstance: d.discordShowInstance, themeBg: d.themeBg, themeAccent: d.themeAccent, themeSecondary: d.themeSecondary, themeHighlight: d.themeHighlight, uiScale: d.uiScale, cornerStyle: d.cornerStyle, glow: d.glow, fontMode: d.fontMode, animations: d.animations, compactSidebar: d.compactSidebar, hiddenPages: d.hiddenPages, sidebarSide: d.sidebarSide, panelSide: d.panelSide, panelWidth: d.panelWidth, showStatusBar: d.showStatusBar, customCss: d.customCss, customHtml: d.customHtml, language: d.language, dnsMode: d.dnsMode, dnsServers: d.dnsServers.trim(), dnsDohUrl: d.dnsDohUrl.trim(), ...nums };
     const p = appSettingsSchema.safeParse(next);
     if (!p.success) return setError(p.error.issues[0]?.message ?? 'error');
     setSaving(true);
@@ -143,6 +146,12 @@ export function SettingsPage() {
             ))}
           </select>
         </Field>
+      </Section>
+
+      <Section icon="download" title={t('import.title')}>
+        <p className="muted">{t('import.hint')}</p>
+        <LauncherIconStrip />
+        <div><button type="button" className="btn btn--outline" onClick={() => setImportOpen(true)}><Icon name="download" size={16} /> {t('import.open')}</button></div>
       </Section>
 
       <Section icon="gear" title={t('settings.behavior')}>
@@ -193,6 +202,7 @@ export function SettingsPage() {
       <Section icon="refresh" title={t('settings.updates')}>
         <div className="row row--between"><span>{t('settings.checkUpdates')}</span><Switch checked={d.checkUpdates} label={t('settings.checkUpdates')} onChange={(v) => set('checkUpdates', v)} /></div>
         <div className="row row--between"><span>{t('settings.autoDownload')}</span><Switch checked={d.autoDownload} label={t('settings.autoDownload')} onChange={(v) => set('autoDownload', v)} /></div>
+        <div className="row row--between"><span>{t('settings.autoInstall')}</span><Switch checked={d.autoInstall} label={t('settings.autoInstall')} onChange={(v) => set('autoInstall', v)} /></div>
         <Field label="GitHub">
           <input className="input" value={d.updateRepo} onChange={(e) => set('updateRepo', e.target.value)} placeholder="ChaldS-mods/ChaldLauncher" spellCheck={false} />
         </Field>
@@ -242,7 +252,12 @@ export function SettingsPage() {
         <div className="form-grid">
           <Field label={t('settings.width')}><input className="input" inputMode="numeric" value={d.width} onChange={(e) => set('width', e.target.value)} /></Field>
           <Field label={t('settings.height')}><input className="input" inputMode="numeric" value={d.height} onChange={(e) => set('height', e.target.value)} /></Field>
-          <div className="form-grid__wide"><Field label={t('settings.jvmArgs')}><input className="input" value={d.jvmArgs} onChange={(e) => set('jvmArgs', e.target.value)} spellCheck={false} /></Field></div>
+          <div className="form-grid__wide">
+            <Field label={t('settings.jvmArgs')} hint={t('settings.jvmPresetsHint')}>
+              <JvmPresets value={d.jvmArgs} onChange={(args) => set('jvmArgs', args)} />
+              <input className="input" style={{ marginTop: 8 }} value={d.jvmArgs} onChange={(e) => set('jvmArgs', e.target.value)} spellCheck={false} />
+            </Field>
+          </div>
         </div>
         <div className="row row--between"><span>{t('settings.fullscreen')}</span><Switch checked={d.fullscreen} label={t('settings.fullscreen')} onChange={(v) => set('fullscreen', v)} /></div>
       </Section>
@@ -358,11 +373,13 @@ export function SettingsPage() {
       <DiscordSection />
       </>}
 
+
       <div className="savebar" role="region" aria-label={t('settings.save')}>
         {error ? <p className="form-error" role="alert">{error}</p> : <span className="muted">{dirty ? '…' : t('settings.saved')}</span>}
         <button className="btn" disabled={!dirty || saving} onClick={() => { setD(toDraft(settings)); setError(null); }}>{t('action.reset')}</button>
         <button className="btn btn--primary" disabled={!dirty || saving} onClick={() => void save()}>{t('action.save')}</button>
       </div>
+      {importOpen && <LauncherImportDialog onClose={() => setImportOpen(false)} />}
     </div>
   );
 }

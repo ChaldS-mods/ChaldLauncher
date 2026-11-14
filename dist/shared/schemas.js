@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.modrinthSearchSchema = exports.modrinthVersionsSchema = exports.modrinthIdSchema = exports.fileNameSchema = exports.mojangStoreSchema = exports.mojangLaunchSchema = exports.dnsTestSchema = exports.appSettingsPatchSchema = exports.appSettingsSchema = exports.updateInstanceSchema = exports.createInstanceSchema = exports.instanceSettingsSchema = exports.instanceIdSchema = exports.offlineNameSchema = exports.presencePageSchema = void 0;
+exports.modrinthSearchSchema = exports.modrinthVersionsSchema = exports.modrinthIdSchema = exports.fileNameSchema = exports.mojangStoreSchema = exports.mojangLaunchSchema = exports.dnsTestSchema = exports.appSettingsPatchSchema = exports.appSettingsSchema = exports.changeVersionSchema = exports.updateInstanceSchema = exports.createInstanceSchema = exports.instanceSettingsSchema = exports.instanceIdSchema = exports.offlineNameSchema = exports.presencePageSchema = void 0;
 const zod_1 = require("zod");
 const dns_1 = require("./dns");
 const mojang_1 = require("./mojang");
@@ -44,6 +44,19 @@ exports.updateInstanceSchema = zod_1.z.object({
     coverColor: zod_1.z.number().int().min(0).max(7).optional(),
     settings: exports.instanceSettingsSchema.optional(),
 });
+/** Move an existing instance to another Minecraft version and/or another loader. */
+exports.changeVersionSchema = zod_1.z.object({
+    id: exports.instanceIdSchema,
+    mcVersion: zod_1.z.string().regex(/^[0-9A-Za-z._+-]{1,40}$/, 'Некорректная версия'),
+    loader: zod_1.z.object({
+        type: zod_1.z.enum(['vanilla', 'fabric', 'quilt', 'forge', 'neoforge']),
+        version: zod_1.z.string().max(64).nullable(),
+    }),
+    /** copy saves/ to <instance>/backups before the switch */
+    backupSaves: zod_1.z.boolean(),
+    /** rename mods/*.jar to *.jar.disabled (mods of another version / loader do not load) */
+    disableMods: zod_1.z.boolean(),
+}).refine((v) => v.loader.type === 'vanilla' || !!v.loader.version, { message: 'Выбери версию загрузчика', path: ['loader'] });
 const hexColor = zod_1.z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Цвет: формат #rrggbb');
 const settingsBase = zod_1.z.object({
     instancesDir: zod_1.z.string().max(1024),
@@ -59,6 +72,7 @@ const settingsBase = zod_1.z.object({
     closeBehavior: zod_1.z.enum(['quit', 'minimize-while-playing']),
     checkUpdates: zod_1.z.boolean(),
     autoDownloadUpdates: zod_1.z.boolean(),
+    autoInstallUpdates: zod_1.z.boolean(),
     uiSounds: zod_1.z.boolean(),
     soundVolume: zod_1.z.number().int().min(0).max(100),
     discordRpc: zod_1.z.boolean(),
@@ -73,7 +87,7 @@ const settingsBase = zod_1.z.object({
     fontMode: zod_1.z.enum(['pixel', 'clean']),
     animations: zod_1.z.boolean(),
     compactSidebar: zod_1.z.boolean(),
-    hiddenPages: zod_1.z.array(zod_1.z.enum(['home', 'instances', 'versions', 'mods', 'resourcepacks', 'wardrobe', 'modrinth', 'console', 'mojang'])).max(9),
+    hiddenPages: zod_1.z.array(zod_1.z.enum(['home', 'instances', 'versions', 'mods', 'resourcepacks', 'wardrobe', 'modrinth', 'curseforge', 'console', 'mojang'])).max(10),
     sidebarSide: zod_1.z.enum(['left', 'right']),
     panelSide: zod_1.z.enum(['right', 'left', 'bottom', 'hidden']),
     panelWidth: zod_1.z.number().int().min(260).max(560),
@@ -89,6 +103,8 @@ const settingsBase = zod_1.z.object({
     offlineName: zod_1.z.string().regex(/^$|^[A-Za-z0-9_]{3,16}$/, 'Ник: 3–16 символов, только A-Z, a-z, 0-9 и «_»'),
     lastInstanceId: zod_1.z.string().max(64).nullable(),
     language: zod_1.z.enum(['en', 'ru', 'kk', 'be']),
+    launcherImportSeen: zod_1.z.boolean().default(false),
+    friendsServerUrl: zod_1.z.string().max(300).default('https://chaldserver.dynmap.xyz'),
 });
 exports.appSettingsSchema = settingsBase.refine((s) => s.memoryMinMb <= s.memoryMaxMb, {
     message: 'Минимум памяти не может быть больше максимума',
@@ -118,7 +134,7 @@ exports.modrinthVersionsSchema = zod_1.z.object({
 });
 exports.modrinthSearchSchema = zod_1.z.object({
     query: zod_1.z.string().trim().max(100),
-    type: zod_1.z.enum(['mod', 'modpack', 'resourcepack']),
+    type: zod_1.z.enum(['mod', 'modpack', 'resourcepack', 'shader', 'datapack']),
     mcVersion: zod_1.z.string().regex(/^[0-9A-Za-z._+-]{1,40}$/).nullable(),
     loader: zod_1.z.enum(['fabric', 'quilt', 'forge', 'neoforge']).nullable(),
     sort: zod_1.z.enum(['relevance', 'downloads', 'follows', 'newest', 'updated']),

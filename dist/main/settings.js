@@ -54,6 +54,7 @@ exports.DEFAULT_SETTINGS = {
     closeBehavior: 'quit',
     checkUpdates: true,
     autoDownloadUpdates: true,
+    autoInstallUpdates: true,
     updateRepo: '',
     uiSounds: true,
     soundVolume: 50,
@@ -84,6 +85,8 @@ exports.DEFAULT_SETTINGS = {
     offlineName: '',
     lastInstanceId: null,
     language: 'ru',
+    launcherImportSeen: false,
+    friendsServerUrl: 'https://chaldserver.dynmap.xyz',
 };
 class SettingsStore {
     file;
@@ -103,14 +106,18 @@ class SettingsStore {
         }
         const merged = { ...exports.DEFAULT_SETTINGS, ...(typeof stored === 'object' && stored ? stored : {}) };
         const parsed = schemas_1.appSettingsSchema.safeParse(merged);
-        this.cache = parsed.success ? parsed.data : { ...exports.DEFAULT_SETTINGS };
+        const data = parsed.success ? parsed.data : { ...exports.DEFAULT_SETTINGS };
+        data.friendsServerUrl = exports.DEFAULT_SETTINGS.friendsServerUrl; // locked
+        this.cache = data;
         return this.cache;
     }
     async set(patch) {
         const p = schemas_1.appSettingsPatchSchema.safeParse(patch);
         if (!p.success)
             throw new errors_1.AppError('SETTINGS_INVALID', p.error.issues[0]?.message ?? 'Некорректные настройки');
-        const next = { ...(await this.get()), ...p.data };
+        // Friends server URL is fixed — ignore any attempts to change it
+        const { friendsServerUrl: _ignored, ...safePatch } = p.data;
+        const next = { ...(await this.get()), ...safePatch, friendsServerUrl: exports.DEFAULT_SETTINGS.friendsServerUrl };
         const full = schemas_1.appSettingsSchema.safeParse(next);
         if (!full.success)
             throw new errors_1.AppError('SETTINGS_INVALID', full.error.issues[0]?.message ?? 'Некорректные настройки');

@@ -1,7 +1,7 @@
 {
   "name": "chald-launcher",
   "productName": "ChaldLauncher",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "Minecraft Launcher by Chald Studio",
   "author": "Chald Studio",
   "license": "UNLICENSED",
@@ -11,6 +11,9 @@
     "dev": "concurrently -k -n vite,tsc,app \"vite\" \"tsc -p tsconfig.main.json -w --preserveWatchOutput\" \"wait-on tcp:5173 dist/main/index.js && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
     "build": "tsc -p tsconfig.main.json && vite build",
     "start": "npm run build && electron .",
+    "dev:second": "cross-env CHALD_PROFILE=test2 VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
+    "second": "npm run build && npm run start:second",
+    "start:second": "cross-env CHALD_PROFILE=test2 electron .",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "test": "vitest run",
     "dist": "npm run build && electron-builder",

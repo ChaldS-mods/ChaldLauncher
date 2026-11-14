@@ -51,6 +51,21 @@ export const updateInstanceSchema = z.object({
 });
 export type UpdateInstanceInput = z.infer<typeof updateInstanceSchema>;
 
+/** Move an existing instance to another Minecraft version and/or another loader. */
+export const changeVersionSchema = z.object({
+  id: instanceIdSchema,
+  mcVersion: z.string().regex(/^[0-9A-Za-z._+-]{1,40}$/, 'Некорректная версия'),
+  loader: z.object({
+    type: z.enum(['vanilla', 'fabric', 'quilt', 'forge', 'neoforge']),
+    version: z.string().max(64).nullable(),
+  }),
+  /** copy saves/ to <instance>/backups before the switch */
+  backupSaves: z.boolean(),
+  /** rename mods/*.jar to *.jar.disabled (mods of another version / loader do not load) */
+  disableMods: z.boolean(),
+}).refine((v) => v.loader.type === 'vanilla' || !!v.loader.version, { message: 'Выбери версию загрузчика', path: ['loader'] });
+export type ChangeVersionInput = z.infer<typeof changeVersionSchema>;
+
 const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Цвет: формат #rrggbb');
 
 const settingsBase = z.object({
@@ -67,6 +82,7 @@ const settingsBase = z.object({
   closeBehavior: z.enum(['quit', 'minimize-while-playing']),
   checkUpdates: z.boolean(),
   autoDownloadUpdates: z.boolean(),
+  autoInstallUpdates: z.boolean(),
   uiSounds: z.boolean(),
   soundVolume: z.number().int().min(0).max(100),
   discordRpc: z.boolean(),
@@ -81,7 +97,7 @@ const settingsBase = z.object({
   fontMode: z.enum(['pixel', 'clean']),
   animations: z.boolean(),
   compactSidebar: z.boolean(),
-  hiddenPages: z.array(z.enum(['home', 'instances', 'versions', 'mods', 'resourcepacks', 'wardrobe', 'modrinth', 'console', 'mojang'])).max(9),
+  hiddenPages: z.array(z.enum(['home', 'instances', 'versions', 'mods', 'resourcepacks', 'wardrobe', 'modrinth', 'curseforge', 'console', 'mojang'])).max(10),
   sidebarSide: z.enum(['left', 'right']),
   panelSide: z.enum(['right', 'left', 'bottom', 'hidden']),
   panelWidth: z.number().int().min(260).max(560),
@@ -97,6 +113,8 @@ const settingsBase = z.object({
   offlineName: z.string().regex(/^$|^[A-Za-z0-9_]{3,16}$/, 'Ник: 3–16 символов, только A-Z, a-z, 0-9 и «_»'),
   lastInstanceId: z.string().max(64).nullable(),
   language: z.enum(['en', 'ru', 'kk', 'be']),
+  launcherImportSeen: z.boolean().default(false),
+  friendsServerUrl: z.string().max(300).default('https://chaldserver.dynmap.xyz'),
 });
 
 export const appSettingsSchema = settingsBase.refine((s) => s.memoryMinMb <= s.memoryMaxMb, {
@@ -131,7 +149,7 @@ export const modrinthVersionsSchema = z.object({
 });
 export const modrinthSearchSchema = z.object({
   query: z.string().trim().max(100),
-  type: z.enum(['mod', 'modpack', 'resourcepack']),
+  type: z.enum(['mod', 'modpack', 'resourcepack', 'shader', 'datapack']),
   mcVersion: z.string().regex(/^[0-9A-Za-z._+-]{1,40}$/).nullable(),
   loader: z.enum(['fabric', 'quilt', 'forge', 'neoforge']).nullable(),
   sort: z.enum(['relevance', 'downloads', 'follows', 'newest', 'updated']),

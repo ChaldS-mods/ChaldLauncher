@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
-import { call, errMsg } from './api';
+import { call, errMsg, on } from './api';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Icon } from './components/Icon';
 import { LogoMark } from './components/Logo';
 import { CreateWizard } from './components/CreateWizard';
 import { Sidebar, StatusBar, TitleBar, Toasts } from './components/Shell';
+import { LauncherImportOffer } from './components/LauncherImport';
 import { Modal, ProgressBar } from './components/ui';
 import { ConsolePage } from './pages/Console';
 import { ContentPage } from './pages/Content';
@@ -14,6 +16,7 @@ import { MojangPage } from './pages/Mojang';
 import { SettingsPage } from './pages/Settings';
 import { VersionsPage } from './pages/Versions';
 import { WardrobePage } from './pages/Wardrobe';
+import { FriendsPage } from './pages/Friends';
 import { useI18n } from './i18n';
 import { useStore, type Page } from './store';
 
@@ -25,11 +28,26 @@ function PageView({ page }: { page: Page }) {
     case 'mods': return <ContentPage kind="mods" />;
     case 'resourcepacks': return <ContentPage kind="resourcepacks" />;
     case 'wardrobe': return <WardrobePage />;
+    case 'friends': return <FriendsPage />;
     case 'modrinth': return <ModrinthPage />;
     case 'console': return <ConsolePage />;
     case 'mojang': return <MojangPage />;
     case 'settings': return <SettingsPage />;
   }
+}
+
+/** Messages about a launch (for example: the licence servers were unreachable, the game starts offline). */
+function GameNotices() {
+  const { t } = useI18n();
+  const toast = useStore((s) => s.toast);
+  useEffect(() => on('game:notice', (e) => {
+    if (e.kind === 'offline-fallback') toast('info', t('game.offlineFallback', { name: e.name }));
+  }), [t, toast]);
+  // an old Chald account was reset by the update (login is now the nickname): say so once
+  useEffect(() => {
+    void call('friends:legacyReset').then((reset) => { if (reset) toast('info', t('chald.legacyReset')); }).catch(() => undefined);
+  }, [t, toast]);
+  return null;
 }
 
 /** Microsoft device-code sign-in: the user enters the code on microsoft.com. */
@@ -129,13 +147,17 @@ export function App() {
       <TitleBar />
       <Sidebar />
       <main className="main" id="main">
-        <PageView page={page} />
+        <ErrorBoundary key={page}>
+          <PageView page={page} />
+        </ErrorBoundary>
       </main>
       <StatusBar />
       <Toasts />
       {wizardOpen && <CreateWizard />}
       <DeviceCodeModal />
       <BrowserLoginModal />
+      <LauncherImportOffer />
+      <GameNotices />
     </div>
   );
 }

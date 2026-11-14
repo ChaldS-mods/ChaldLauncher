@@ -45,8 +45,12 @@ class Updater {
     d;
     found = null;
     ac = null;
+    applying = false;
     constructor(d) {
         this.d = d;
+    }
+    get pick() {
+        return { appImage: !!this.d.appImage, arch: this.d.arch };
     }
     fileFor(f) {
         return path.join(this.d.dir, f.release.version, (0, paths_1.safeFileName)(f.asset.name));
@@ -60,10 +64,21 @@ class Updater {
         const repo = await this.d.repo();
         if (!repo)
             return (0, update_1.noUpdateSource)(this.d.version);
-        const release = await (this.d.fetchRelease ?? update_1.fetchLatestRelease)(repo);
-        const asset = (0, update_1.pickInstallerAsset)(release.assets, this.d.platform);
+        let release;
+        try {
+            release = await (this.d.fetchRelease ?? update_1.fetchLatestRelease)(repo);
+        }
+        catch (e) {
+            // a repository without a single release is normal at the start: not an error, just nothing to update to
+            if ((0, update_1.isNoReleaseError)(e)) {
+                this.found = null;
+                return (0, update_1.noReleasesYet)(this.d.version);
+            }
+            throw e;
+        }
+        const asset = (0, update_1.pickInstallerAsset)(release.assets, this.d.platform, this.pick);
         this.found = { repo, release, asset };
-        const info = (0, update_1.toUpdateInfo)(release, this.d.version, this.d.platform, { downloaded: false, downloading: this.ac !== null });
+        const info = (0, update_1.toUpdateInfo)(release, this.d.version, this.d.platform, { downloaded: false, downloading: this.ac !== null }, this.pick);
         if (info.hasUpdate && asset)
             info.downloaded = await this.downloaded(this.found);
         return info;
@@ -73,7 +88,7 @@ class Updater {
         const f = this.found ?? (await this.check(), this.found);
         if (!f || !f.asset)
             throw new errors_1.AppError('UPDATE_NO_FILE', 'Для этой версии нет файла установки: скачай обновление со страницы релиза.');
-        if ((0, update_1.toUpdateInfo)(f.release, this.d.version, this.d.platform, { downloaded: false, downloading: false }).hasUpdate === false) {
+        if ((0, update_1.toUpdateInfo)(f.release, this.d.version, this.d.platform, { downloaded: false, downloading: false }, this.pick).hasUpdate === false) {
             throw new errors_1.AppError('UPDATE_NONE', 'Новой версии нет');
         }
         if (this.ac)
@@ -101,7 +116,8 @@ class Updater {
                     },
                 });
                 this.ac = null;
-                emit(`Обновление ${version} скачано`, 1, 'done');
+                const onQuit = await (this.d.autoInstall?.() ?? Promise.resolve(false)).catch(() => false);
+                emit(onQuit ? `Обновление ${version} скачано: установится при закрытии лаунчера` : `Обновление ${version} скачано`, 1, 'done');
             }
             catch (e) {
                 this.ac = null;
@@ -115,15 +131,51 @@ class Updater {
     cancel() {
         this.ac?.abort();
     }
-    /** Runs the downloaded installer (silently, it restarts the launcher) and closes the launcher. */
+    /** Applies the downloaded update (silently, the launcher starts again) and closes the launcher. */
     async install() {
         const f = this.found;
         if (!f || !f.asset || !(await this.downloaded(f)))
             throw new errors_1.AppError('UPDATE_NOT_READY', 'Обновление ещё не скачано');
         if (this.d.gamesRunning() > 0)
             throw new errors_1.AppError('UPDATE_GAME_RUNNING', 'Сначала закрой игру: лаунчер перезапустится для обновления.');
-        await this.d.runInstaller(this.fileFor(f)); // the file was just verified against size and SHA-256
+        if (this.applying)
+            return;
+        this.applying = true;
+        try {
+            await this.d.runInstaller(this.fileFor(f), { launch: true }); // the file was just verified against size and SHA-256
+        }
+        catch (e) {
+            this.applying = false;
+            throw e;
+        }
         setTimeout(() => this.d.quit(), 400);
+    }
+    /**
+     * Called when the launcher is being closed: if a verified update is waiting and the user wants updates installed by
+     * themselves, applies it now (without starting the launcher again). Returns true when something was applied.
+     * Never throws: a failed update must not keep the launcher from closing.
+     */
+    async installOnQuit() {
+        try {
+            const f = this.found;
+            if (this.applying || !f || !f.asset)
+                return false;
+            if (!(await (this.d.autoInstall?.() ?? Promise.resolve(false))))
+                return false;
+            if ((0, update_1.toUpdateInfo)(f.release, this.d.version, this.d.platform, { downloaded: false, downloading: false }, this.pick).hasUpdate === false)
+                return false;
+            if (this.ac || this.d.gamesRunning() > 0 || !(await this.downloaded(f)))
+                return false;
+            if (!(0, update_1.isOwnReleaseUrl)(f.asset.url, f.repo))
+                return false;
+            this.applying = true;
+            await this.d.runInstaller(this.fileFor(f), { launch: false });
+            return true;
+        }
+        catch {
+            this.applying = false;
+            return false;
+        }
     }
     async dropOldVersions(keep) {
         let names = [];

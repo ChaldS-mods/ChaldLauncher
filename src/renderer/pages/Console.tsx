@@ -6,12 +6,41 @@ import { Empty } from '../components/ui';
 import { useI18n, localeTag } from '../i18n';
 import { useStore } from '../store';
 
+/** Копирует текст в буфер обмена; если Clipboard API недоступен, через скрытое поле. */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* fallback ниже */
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+const ERR_RE = /ERROR|Exception|FATAL/;
+
 function GameLogs() {
   const instances = useStore((s) => s.instances);
   const selectedId = useStore((s) => s.selectedId);
   const select = useStore((s) => s.select);
   const live = useStore((s) => s.logs);
   const { t } = useI18n();
+  const toast = useStore((s) => s.toast);
   const [initial, setInitial] = useState<Record<string, string[]>>({});
   const box = useRef<HTMLDivElement>(null);
   const [stick, setStick] = useState(true);
@@ -31,6 +60,12 @@ function GameLogs() {
     if (stick && box.current) box.current.scrollTop = box.current.scrollHeight;
   }, [lines.length, stick]);
 
+  const copy = async (text: string) => {
+    const ok = await copyText(text);
+    toast(ok ? 'ok' : 'error', ok ? t('console.copied') : t('console.copyFail'));
+  };
+  const errorLines = lines.filter((l) => ERR_RE.test(l));
+
   if (!instances.length) {
     return <Empty icon="terminal" title={t('instances.empty')} text={t('console.gameHint')} />;
   }
@@ -49,13 +84,19 @@ function GameLogs() {
           <input type="checkbox" checked={stick} onChange={(e) => setStick(e.target.checked)} /> {t('console.follow')}
         </label>
         <span className="muted">{lines.length}</span>
+        <button className="btn btn--sm" disabled={!lines.length} onClick={() => void copy(lines.join('\n'))}>
+          <Icon name="copy" size={14} /> {t('console.copyAll')}
+        </button>
+        <button className="btn btn--sm" disabled={!errorLines.length} onClick={() => void copy(errorLines.join('\n'))}>
+          {t('console.copyErrors')}
+        </button>
       </div>
       {lines.length === 0 ? (
         <Empty icon="terminal" title={t('console.empty')} text={t('console.gameHint')} />
       ) : (
         <div className="log" ref={box} role="log" tabIndex={0} aria-label={t('console.game')}>
           {lines.map((l, i) => (
-            <div key={i} className={/ERROR|Exception|FATAL/.test(l) ? 'log__err' : /WARN/.test(l) ? 'log__warn' : ''}>
+            <div key={i} className={ERR_RE.test(l) ? 'log__err' : /WARN/.test(l) ? 'log__warn' : ''}>
               {l}
             </div>
           ))}
@@ -67,6 +108,7 @@ function GameLogs() {
 
 function NetworkLog() {
   const { t, language } = useI18n();
+  const toast = useStore((s) => s.toast);
   const [entries, setEntries] = useState<NetEntry[]>([]);
   const [hosts, setHosts] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -85,11 +127,22 @@ function NetworkLog() {
     return () => clearInterval(timer);
   }, [load]);
 
+  const copyAll = async () => {
+    const text = entries
+      .map((e) => `${new Date(e.time).toISOString()} ${e.method} ${e.host}${e.path} ${e.error ? e.error : e.status ?? '…'}`)
+      .join('\n');
+    const ok = await copyText(text);
+    toast(ok ? 'ok' : 'error', ok ? t('console.copied') : t('console.copyFail'));
+  };
+
   return (
     <div className="stack">
       <div className="row row--between">
         <p className="muted">{t('console.networkHint')}</p>
         <div className="row">
+          <button className="btn btn--sm" onClick={() => void copyAll()} disabled={!entries.length}>
+            <Icon name="copy" size={14} /> {t('console.copyAll')}
+          </button>
           <button className="btn btn--sm" onClick={() => void load()}>
             <Icon name="refresh" size={14} /> {t('action.refresh')}
           </button>

@@ -4,6 +4,7 @@ import type { AccountMode } from '../../shared/types';
 import { call, errMsg } from '../api';
 import { useI18n } from '../i18n';
 import { useStore } from '../store';
+import { ChaldAccountForm } from './ChaldAccountForm';
 import { Icon } from './Icon';
 import { Field, Modal } from './ui';
 
@@ -145,6 +146,7 @@ export function AccountSection() {
               <span className="badge badge--warn">{t('auth.offline')}</span>
             </p>
           )}
+          <ChaldAccountForm />
         </>
       )}
 

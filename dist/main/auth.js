@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AuthService = void 0;
+exports.isLicenseServerDown = isLicenseServerDown;
 const path = __importStar(require("node:path"));
 const fs = __importStar(require("node:fs/promises"));
 const http = __importStar(require("node:http"));
@@ -44,6 +45,18 @@ const net_1 = require("./net");
 const offline_1 = require("./offline");
 const SCOPE = 'XboxLive.signin offline_access';
 const TENANT = 'https://login.microsoftonline.com/consumers/oauth2/v2.0';
+/** A server answered with an outage or a rate limit (not with «no» to this account). */
+const isOutage = (status) => status >= 500 || status === 429;
+/**
+ * True when the licence servers (Microsoft / Xbox / Minecraft) could not be reached or are down.
+ * A refused account (revoked session, no game, child account…) is NOT an outage.
+ */
+function isLicenseServerDown(e) {
+    return e instanceof errors_1.AppError && (e.code === 'NET_FAILED' || e.code === 'AUTH_UNAVAILABLE');
+}
+function outage(host, status) {
+    return new errors_1.AppError('AUTH_UNAVAILABLE', `Серверы входа сейчас недоступны (HTTP ${status}, ${host}). Попробуй позже.`);
+}
 async function form(url, body, purpose, signal) {
     const { res, entry } = await (0, net_1.netRequest)(url, {
         method: 'POST',
@@ -54,7 +67,15 @@ async function form(url, body, purpose, signal) {
     });
     const text = await res.text();
     entry.bytes = Buffer.byteLength(text);
-    return JSON.parse(text);
+    if (isOutage(res.status))
+        throw outage(entry.host, res.status);
+    try {
+        return JSON.parse(text);
+    }
+    catch {
+        // an error page instead of JSON: the service is having problems
+        throw outage(entry.host, res.status);
+    }
 }
 async function postJson(url, body, purpose, signal, token) {
     const { res, entry } = await (0, net_1.netRequest)(url, {
@@ -67,6 +88,8 @@ async function postJson(url, body, purpose, signal, token) {
     const text = await res.text();
     entry.bytes = Buffer.byteLength(text);
     if (!res.ok) {
+        if (isOutage(res.status))
+            throw outage(entry.host, res.status);
         let xerr;
         try {
             xerr = JSON.parse(text).XErr;
@@ -111,6 +134,8 @@ async function minecraftLogin(msToken, signal) {
     entry.bytes = Buffer.byteLength(text);
     if (res.status === 404)
         throw new errors_1.AppError('AUTH_NO_GAME', 'На этом аккаунте нет Minecraft Java Edition. Игра должна быть куплена.');
+    if (isOutage(res.status))
+        throw outage(entry.host, res.status);
     if (!res.ok)
         throw new errors_1.AppError('AUTH_HTTP', `Не удалось получить профиль Minecraft (HTTP ${res.status})`);
     const profile = JSON.parse(text);
@@ -329,8 +354,14 @@ class AuthService {
         await fs.rm(this.file, { force: true });
         return this.notify();
     }
-    /** Used only by the main process when launching the game. The token never goes to the renderer. */
-    async getLaunchAuth() {
+    /**
+     * Used only by the main process when launching the game. The token never goes to the renderer.
+     *
+     * With `offlineFallback`, when the licence servers cannot be reached the game still starts: offline, under the SAME name
+     * and UUID as the licensed account (taken from the last successful sign-in), so singleplayer worlds and data match.
+     * This needs an earlier sign-in; a refused account (revoked session, no game…) is still an error.
+     */
+    async getLaunchAuth(opts = {}) {
         await this.load();
         const cfg = await this.getConfig();
         if (cfg.mode === 'offline') {
@@ -346,15 +377,29 @@ class AuthService {
         if (!this.stored?.refreshToken)
             throw new errors_1.AppError('AUTH_REQUIRED', 'Войди в аккаунт Microsoft, чтобы запустить игру.');
         const clientId = this.stored.clientId || cfg.msClientId;
-        const t = await form(`${TENANT}/token`, {
-            grant_type: 'refresh_token', client_id: clientId, refresh_token: this.stored.refreshToken, scope: SCOPE,
-        }, 'Вход Microsoft: обновление сессии');
-        if (!t.access_token)
-            throw new errors_1.AppError('AUTH_REQUIRED', 'Сессия истекла. Войди в аккаунт заново.');
-        this.session = await minecraftLogin(t.access_token);
-        this.stored = { ...this.stored, refreshToken: t.refresh_token ?? this.stored.refreshToken, uuid: this.session.uuid, name: this.session.name };
-        await this.persist();
-        return { name: this.session.name, uuid: this.session.uuid, accessToken: this.session.accessToken, userType: 'msa' };
+        try {
+            const t = await form(`${TENANT}/token`, {
+                grant_type: 'refresh_token', client_id: clientId, refresh_token: this.stored.refreshToken, scope: SCOPE,
+            }, 'Вход Microsoft: обновление сессии');
+            if (!t.access_token)
+                throw new errors_1.AppError('AUTH_REQUIRED', 'Сессия истекла. Войди в аккаунт заново.');
+            this.session = await minecraftLogin(t.access_token);
+            this.stored = { ...this.stored, refreshToken: t.refresh_token ?? this.stored.refreshToken, uuid: this.session.uuid, name: this.session.name };
+            await this.persist();
+            return { name: this.session.name, uuid: this.session.uuid, accessToken: this.session.accessToken, userType: 'msa' };
+        }
+        catch (e) {
+            if (!opts.offlineFallback || !isLicenseServerDown(e))
+                throw e;
+            // the token we already have is still good for a while: use it as it is
+            if (this.session && this.session.expiresAt > Date.now() + 60_000) {
+                return { name: this.session.name, uuid: this.session.uuid, accessToken: this.session.accessToken, userType: 'msa' };
+            }
+            const { name, uuid } = this.stored;
+            if (!name || !uuid)
+                throw e;
+            return { name, uuid, accessToken: '0', userType: 'legacy', offlineFallback: true };
+        }
     }
 }
 exports.AuthService = AuthService;

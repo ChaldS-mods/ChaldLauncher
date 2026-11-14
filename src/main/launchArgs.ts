@@ -8,6 +8,8 @@ export interface LaunchAuth {
   accessToken: string;
   /** 'msa' for Microsoft accounts, 'legacy' for offline */
   userType?: 'msa' | 'legacy';
+  /** the licence servers were unreachable: offline launch under the licensed name and UUID */
+  offlineFallback?: boolean;
 }
 
 export interface LaunchInput {

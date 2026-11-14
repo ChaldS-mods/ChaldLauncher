@@ -4,7 +4,7 @@ import type { OpProgress, UpdateInfo } from '../shared/types';
 import { downloadFile, isFileValid, type DownloadOptions, type DownloadSpec } from './download';
 import { AppError, isAbort } from './errors';
 import { safeFileName } from './paths';
-import { fetchLatestRelease, isOwnReleaseUrl, noUpdateSource, pickInstallerAsset, toUpdateInfo, type ReleaseAsset, type ReleaseInfo } from './update';
+import { fetchLatestRelease, isNoReleaseError, isOwnReleaseUrl, noReleasesYet, noUpdateSource, pickInstallerAsset, toUpdateInfo, type PickOptions, type ReleaseAsset, type ReleaseInfo } from './update';
 
 export interface UpdaterDeps {
   /** <dataDir>/updates: one folder per version */
@@ -17,8 +17,16 @@ export interface UpdaterDeps {
   download?: (spec: DownloadSpec, opts?: DownloadOptions) => Promise<void>;
   emit: (p: OpProgress) => void;
   gamesRunning: () => number;
-  /** starts the installer and resolves once it is running */
-  runInstaller: (file: string) => Promise<void>;
+  /** Linux: path of the AppImage the launcher runs from (process.env.APPIMAGE); empty = not an AppImage */
+  appImage?: string | null;
+  arch?: string;
+  /** install a downloaded update by itself when the launcher is closed */
+  autoInstall?: () => Promise<boolean>;
+  /**
+   * Applies the downloaded file (starts the installer / replaces the AppImage) and resolves once that is done.
+   * launch: start the launcher again afterwards (false when the user is closing it anyway).
+   */
+  runInstaller: (file: string, opts: { launch: boolean }) => Promise<void>;
   quit: () => void;
 }
 
@@ -28,8 +36,13 @@ interface Found { repo: string; release: ReleaseInfo; asset: ReleaseAsset | null
 export class Updater {
   private found: Found | null = null;
   private ac: AbortController | null = null;
+  private applying = false;
 
   constructor(private d: UpdaterDeps) {}
+
+  private get pick(): PickOptions {
+    return { appImage: !!this.d.appImage, arch: this.d.arch };
+  }
 
   private fileFor(f: Found): string {
     return path.join(this.d.dir, f.release.version, safeFileName(f.asset!.name));
@@ -43,10 +56,20 @@ export class Updater {
   async check(): Promise<UpdateInfo> {
     const repo = await this.d.repo();
     if (!repo) return noUpdateSource(this.d.version);
-    const release = await (this.d.fetchRelease ?? fetchLatestRelease)(repo);
-    const asset = pickInstallerAsset(release.assets, this.d.platform);
+    let release: ReleaseInfo;
+    try {
+      release = await (this.d.fetchRelease ?? fetchLatestRelease)(repo);
+    } catch (e) {
+      // a repository without a single release is normal at the start: not an error, just nothing to update to
+      if (isNoReleaseError(e)) {
+        this.found = null;
+        return noReleasesYet(this.d.version);
+      }
+      throw e;
+    }
+    const asset = pickInstallerAsset(release.assets, this.d.platform, this.pick);
     this.found = { repo, release, asset };
-    const info = toUpdateInfo(release, this.d.version, this.d.platform, { downloaded: false, downloading: this.ac !== null });
+    const info = toUpdateInfo(release, this.d.version, this.d.platform, { downloaded: false, downloading: this.ac !== null }, this.pick);
     if (info.hasUpdate && asset) info.downloaded = await this.downloaded(this.found);
     return info;
   }
@@ -55,7 +78,7 @@ export class Updater {
   async start(): Promise<void> {
     const f = this.found ?? (await this.check(), this.found);
     if (!f || !f.asset) throw new AppError('UPDATE_NO_FILE', 'Для этой версии нет файла установки: скачай обновление со страницы релиза.');
-    if (toUpdateInfo(f.release, this.d.version, this.d.platform, { downloaded: false, downloading: false }).hasUpdate === false) {
+    if (toUpdateInfo(f.release, this.d.version, this.d.platform, { downloaded: false, downloading: false }, this.pick).hasUpdate === false) {
       throw new AppError('UPDATE_NONE', 'Новой версии нет');
     }
     if (this.ac) return;
@@ -85,7 +108,8 @@ export class Updater {
           },
         );
         this.ac = null;
-        emit(`Обновление ${version} скачано`, 1, 'done');
+        const onQuit = await (this.d.autoInstall?.() ?? Promise.resolve(false)).catch(() => false);
+        emit(onQuit ? `Обновление ${version} скачано: установится при закрытии лаунчера` : `Обновление ${version} скачано`, 1, 'done');
       } catch (e) {
         this.ac = null;
         if (isAbort(e) || ac.signal.aborted) emit('Скачивание обновления отменено', null, 'cancelled');
@@ -98,13 +122,42 @@ export class Updater {
     this.ac?.abort();
   }
 
-  /** Runs the downloaded installer (silently, it restarts the launcher) and closes the launcher. */
+  /** Applies the downloaded update (silently, the launcher starts again) and closes the launcher. */
   async install(): Promise<void> {
     const f = this.found;
     if (!f || !f.asset || !(await this.downloaded(f))) throw new AppError('UPDATE_NOT_READY', 'Обновление ещё не скачано');
     if (this.d.gamesRunning() > 0) throw new AppError('UPDATE_GAME_RUNNING', 'Сначала закрой игру: лаунчер перезапустится для обновления.');
-    await this.d.runInstaller(this.fileFor(f)); // the file was just verified against size and SHA-256
+    if (this.applying) return;
+    this.applying = true;
+    try {
+      await this.d.runInstaller(this.fileFor(f), { launch: true }); // the file was just verified against size and SHA-256
+    } catch (e) {
+      this.applying = false;
+      throw e;
+    }
     setTimeout(() => this.d.quit(), 400);
+  }
+
+  /**
+   * Called when the launcher is being closed: if a verified update is waiting and the user wants updates installed by
+   * themselves, applies it now (without starting the launcher again). Returns true when something was applied.
+   * Never throws: a failed update must not keep the launcher from closing.
+   */
+  async installOnQuit(): Promise<boolean> {
+    try {
+      const f = this.found;
+      if (this.applying || !f || !f.asset) return false;
+      if (!(await (this.d.autoInstall?.() ?? Promise.resolve(false)))) return false;
+      if (toUpdateInfo(f.release, this.d.version, this.d.platform, { downloaded: false, downloading: false }, this.pick).hasUpdate === false) return false;
+      if (this.ac || this.d.gamesRunning() > 0 || !(await this.downloaded(f))) return false;
+      if (!isOwnReleaseUrl(f.asset.url, f.repo)) return false;
+      this.applying = true;
+      await this.d.runInstaller(this.fileFor(f), { launch: false });
+      return true;
+    } catch {
+      this.applying = false;
+      return false;
+    }
   }
 
   private async dropOldVersions(keep: string): Promise<void> {

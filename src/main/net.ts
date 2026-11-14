@@ -27,6 +27,11 @@ const ALLOWED_HOSTS: Record<string, string> = {
   'api.github.com': 'Проверка обновлений лаунчера',
   'api.modrinth.com': 'Поиск модов и сборок (Modrinth)',
   'cdn.modrinth.com': 'Файлы модов и сборок (Modrinth)',
+  'media.modrinth.com': 'Иконки и медиа (Modrinth)',
+  'api.curseforge.com': 'Поиск модов (CurseForge)',
+  'edge.forgecdn.net': 'Файлы модов (CurseForge CDN)',
+  'media.forgecdn.net': 'Файлы и иконки (CurseForge CDN)',
+  'mediafilez.forgecdn.net': 'Файлы модов (CurseForge CDN)',
   'raw.githubusercontent.com': 'Файлы сборок (GitHub)',
   'gitlab.com': 'Файлы сборок (GitLab)',
   'login.microsoftonline.com': 'Вход Microsoft',
@@ -34,7 +39,15 @@ const ALLOWED_HOSTS: Record<string, string> = {
   'xsts.auth.xboxlive.com': 'Вход Xbox Live (XSTS)',
   'api.minecraftservices.com': 'Профиль Minecraft и смена скина',
   'textures.minecraft.net': 'Скины Minecraft (текущий скин аккаунта)',
+  // Local Chald Friends test server
+  '127.0.0.1': 'Chald Friends (локальный сервер)',
+  'localhost': 'Chald Friends (локальный сервер)',
+  'chaldserver.dynmap.xyz': 'Chald Friends (сервер)',
 };
+
+/** Allow plain HTTP for these friends hosts (in addition to loopback). */
+const FRIENDS_HTTP_HOSTS = new Set(['127.0.0.1', 'localhost', 'chaldserver.dynmap.xyz']);
+
 
 const extraHosts = new Set<string>();
 /** Tests only: allow a local http server. */
@@ -70,8 +83,23 @@ setDnsLogger((e) =>
 function checkUrl(u: URL): void {
   const host = u.hostname;
   if (extraHosts.has(host)) return;
-  if (u.protocol !== 'https:') throw new AppError('NET_BLOCKED', `Заблокирован небезопасный протокол: ${u.protocol}`);
-  if (!(host in ALLOWED_HOSTS)) throw new AppError('NET_BLOCKED', `Хост не в списке разрешённых: ${host}`);
+  // Chald Friends: allow plain HTTP for loopback + configured public IP
+  const friendsHttp = FRIENDS_HTTP_HOSTS.has(host) && u.protocol === 'http:';
+  if (u.protocol !== 'https:' && !friendsHttp) {
+    throw new AppError('NET_BLOCKED', `Заблокирован небезопасный протокол: ${u.protocol}`);
+  }
+  if (!(host in ALLOWED_HOSTS) && !friendsHttp && !extraHosts.has(host)) {
+    throw new AppError('NET_BLOCKED', `Хост не в списке разрешённых: ${host}`);
+  }
+}
+
+/** Call when friendsServerUrl changes — allows that host over HTTP. */
+export function allowFriendsHttpHost(host: string): void {
+  if (!host) return;
+  FRIENDS_HTTP_HOSTS.add(host);
+  if (!(host in ALLOWED_HOSTS)) {
+    (ALLOWED_HOSTS as Record<string, string>)[host] = 'Chald Friends (из настроек)';
+  }
 }
 
 export interface NetResult {

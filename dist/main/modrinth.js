@@ -46,6 +46,7 @@ exports.planPack = planPack;
 exports.readMrpackIndex = readMrpackIndex;
 exports.extractOverrides = extractOverrides;
 exports.readInstalled = readInstalled;
+exports.contentDirName = contentDirName;
 exports.listInstalledProjects = listInstalledProjects;
 exports.planInstall = planInstall;
 exports.runInstallPlan = runInstallPlan;
@@ -115,6 +116,14 @@ const detailSchema = zod_1.z.object({
     license: zod_1.z.object({ name: zod_1.z.string().nullable().optional() }).nullable().optional(),
     updated: zod_1.z.string().nullable().optional(),
 });
+const detailExtSchema = detailSchema.extend({
+    client_side: zod_1.z.string().nullish(),
+    server_side: zod_1.z.string().nullish(),
+    source_url: zod_1.z.string().nullish(),
+    issues_url: zod_1.z.string().nullish(),
+    wiki_url: zod_1.z.string().nullish(),
+    published: zod_1.z.string().nullish(),
+});
 const versionDetailSchema = exports.mrVersionSchema.extend({
     date_published: zod_1.z.string().default(''),
     downloads: zod_1.z.number().default(0),
@@ -153,7 +162,7 @@ function buildFacets(q) {
     const facets = [[`project_type:${q.type}`]];
     if (q.mcVersion)
         facets.push([`versions:${q.mcVersion}`]);
-    if (q.loader && q.type !== 'resourcepack')
+    if (q.loader && q.type === 'mod')
         facets.push((loaderFilter(q.loader) ?? []).map((l) => `categories:${l}`));
     return facets;
 }
@@ -351,10 +360,22 @@ class ModrinthApi {
     versions(projectId, opts, signal) {
         return this.get(this.versionsUrl(projectId, opts), zod_1.z.array(exports.mrVersionSchema), signal);
     }
+    /** Full project data without the icon download (cheap enough for the AI agent to call often). */
+    async projectDetails(id, signal) {
+        const p = await this.get(`${API}/project/${encodeURIComponent(id)}`, detailExtSchema, signal);
+        const type = (['mod', 'modpack', 'resourcepack', 'shader', 'datapack'].includes(p.project_type) ? p.project_type : 'mod');
+        return {
+            id: p.id, slug: p.slug, title: p.title, description: p.description, body: (p.body ?? '').slice(0, MAX_BODY_CHARS), type,
+            downloads: p.downloads, follows: p.followers, categories: p.categories, loaders: p.loaders, gameVersions: p.game_versions,
+            clientSide: p.client_side ?? null, serverSide: p.server_side ?? null, license: p.license?.name ?? null,
+            updated: p.updated ?? null, published: p.published ?? null,
+            sourceUrl: p.source_url ?? null, issuesUrl: p.issues_url ?? null, wikiUrl: p.wiki_url ?? null,
+        };
+    }
     /** Everything the project page needs: long Markdown description, stats, icon. */
     async projectInfo(id, signal) {
         const p = await this.get(`${API}/project/${encodeURIComponent(id)}`, detailSchema, signal);
-        const type = (['mod', 'modpack', 'resourcepack'].includes(p.project_type) ? p.project_type : 'mod');
+        const type = (['mod', 'modpack', 'resourcepack', 'shader', 'datapack'].includes(p.project_type) ? p.project_type : 'mod');
         return {
             id: p.id, slug: p.slug, title: p.title, description: p.description, body: (p.body ?? '').slice(0, MAX_BODY_CHARS), type,
             downloads: p.downloads, follows: p.followers, categories: p.categories, loaders: p.loaders, gameVersions: p.game_versions,
@@ -379,23 +400,40 @@ class ModrinthApi {
         if (!url)
             return null;
         try {
-            const { res, entry } = await (0, net_1.netRequest)(url, { purpose: 'Иконка проекта', signal, headers: { 'User-Agent': this.userAgent } });
-            const type = (res.headers.get('content-type') ?? '').split(';')[0].trim();
-            if (!res.ok || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(type)) {
+            const { res, entry } = await (0, net_1.netRequest)(url, {
+                purpose: 'Иконка проекта',
+                signal,
+                headers: { 'User-Agent': this.userAgent, Accept: 'image/webp,image/png,image/jpeg,image/gif,*/*' },
+            });
+            if (!res.ok) {
                 await res.body?.cancel().catch(() => undefined);
                 return null;
             }
             const buf = Buffer.from(await res.arrayBuffer());
             entry.bytes = buf.length;
-            if (buf.length > MAX_ICON_BYTES)
+            if (buf.length < 16 || buf.length > MAX_ICON_BYTES)
                 return null;
+            let type = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+            // CDN sometimes omits or mangles Content-Type — detect by magic bytes
+            if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(type)) {
+                if (buf[0] === 0x89 && buf[1] === 0x50)
+                    type = 'image/png';
+                else if (buf[0] === 0xff && buf[1] === 0xd8)
+                    type = 'image/jpeg';
+                else if (buf[0] === 0x47 && buf[1] === 0x49)
+                    type = 'image/gif';
+                else if (buf[0] === 0x52 && buf[1] === 0x49 && buf[8] === 0x57)
+                    type = 'image/webp'; // RIFF....WEBP
+                else
+                    return null;
+            }
             return `data:${type};base64,${buf.toString('base64')}`;
         }
         catch {
             return null; // a missing icon never breaks search
         }
     }
-    async search(input, signal) {
+    async search(input, signal, opts = {}) {
         const qs = new URLSearchParams({
             query: input.query,
             facets: JSON.stringify(buildFacets(input)),
@@ -407,13 +445,15 @@ class ModrinthApi {
         const hits = r.hits.map((h) => ({
             id: h.project_id, slug: h.slug, title: h.title, description: h.description, author: h.author,
             downloads: h.downloads, follows: h.follows, categories: h.display_categories ?? h.categories,
-            type: (['mod', 'modpack', 'resourcepack'].includes(h.project_type) ? h.project_type : input.type),
+            type: (['mod', 'modpack', 'resourcepack', 'shader', 'datapack'].includes(h.project_type) ? h.project_type : input.type),
             iconDataUrl: null,
         }));
-        const icons = r.hits.map((h) => h.icon_url);
-        await (0, download_1.runPool)(hits.map((_, i) => i), 6, async (i) => {
-            hits[i].iconDataUrl = await this.icon(icons[i], signal);
-        });
+        if (opts.icons !== false) {
+            const icons = r.hits.map((h) => h.icon_url);
+            await (0, download_1.runPool)(hits.map((_, i) => i), 6, async (i) => {
+                hits[i].iconDataUrl = await this.icon(icons[i], signal);
+            });
+        }
         return { hits, total: r.total_hits, offset: r.offset };
     }
 }
@@ -429,8 +469,16 @@ async function readInstalled(gameDir) {
     }
 }
 /** Modrinth project ids installed in this game directory (the file must still exist). Dependencies count too. */
+function contentDirName(kind) {
+    switch (kind) {
+        case 'mod': return 'mods';
+        case 'resourcepack': return 'resourcepacks';
+        case 'shader': return 'shaderpacks';
+        case 'datapack': return 'datapacks';
+    }
+}
 async function listInstalledProjects(gameDir, kind) {
-    const dir = path.join(gameDir, kind === 'mod' ? 'mods' : 'resourcepacks');
+    const dir = path.join(gameDir, contentDirName(kind));
     const installed = await readInstalled(gameDir);
     const out = [];
     for (const [projectId, info] of Object.entries(installed.projects)) {
@@ -448,9 +496,18 @@ async function planInstall(api, t, projectId, signal, versionId) {
     if (t.kind === 'mod' && t.loader === 'vanilla') {
         throw new errors_1.AppError('LOADER_REQUIRED', 'Моды не работают в инстансе Vanilla. Создай инстанс с Fabric, Quilt, Forge или NeoForge.');
     }
-    const dirName = t.kind === 'mod' ? 'mods' : 'resourcepacks';
     const ext = t.kind === 'mod' ? '.jar' : '.zip';
-    const dir = path.join(t.gameDir, dirName);
+    let dir;
+    if (t.kind === 'datapack') {
+        const world = (t.worldName ?? '').trim();
+        if (!world || world.includes('/') || world.includes('\\') || world.includes('..')) {
+            throw new errors_1.AppError('MR_WORLD', 'Выбери мир для установки датапака');
+        }
+        dir = path.join(t.gameDir, 'saves', world, 'datapacks');
+    }
+    else {
+        dir = path.join(t.gameDir, contentDirName(t.kind));
+    }
     const installed = await readInstalled(t.gameDir);
     const loaders = t.kind === 'mod' ? loaderFilter(t.loader) : null;
     const plan = [];

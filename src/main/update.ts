@@ -50,14 +50,29 @@ export async function fetchLatestRelease(repo: string): Promise<ReleaseInfo> {
   };
 }
 
+export interface PickOptions {
+  /** Linux: the launcher runs from an AppImage, so a new AppImage can replace it */
+  appImage?: boolean;
+  /** process.arch: picks the x64 or the arm64 AppImage */
+  arch?: string;
+}
+
 /**
- * The file that updates the launcher. Only Windows has a self-made installer (ChaldLauncher-Setup.exe), so other
- * platforms get no automatic download (the user is pointed to the release page instead).
+ * The file that updates the launcher. Windows has a self-made installer (ChaldLauncher-Setup.exe); on Linux only an
+ * AppImage can replace itself. Other cases (tar.gz, a distro package, macOS) get no automatic download: the user is
+ * pointed to the release page instead.
  */
-export function pickInstallerAsset(assets: ReleaseAsset[], platform: string): ReleaseAsset | null {
-  if (platform !== 'win32') return null;
-  const exes = assets.filter((a) => /\.exe$/i.test(a.name) && !/uninstall|portable|blockmap/i.test(a.name));
-  return exes.find((a) => /setup|install/i.test(a.name)) ?? exes[0] ?? null;
+export function pickInstallerAsset(assets: ReleaseAsset[], platform: string, opts: PickOptions = {}): ReleaseAsset | null {
+  if (platform === 'win32') {
+    const exes = assets.filter((a) => /\.exe$/i.test(a.name) && !/uninstall|portable|blockmap/i.test(a.name));
+    return exes.find((a) => /setup|install/i.test(a.name)) ?? exes[0] ?? null;
+  }
+  if (platform === 'linux' && opts.appImage) {
+    const wantArm = opts.arch === 'arm64';
+    const images = assets.filter((a) => /\.appimage$/i.test(a.name));
+    return images.find((a) => /arm64|aarch64/i.test(a.name) === wantArm) ?? null;
+  }
+  return null;
 }
 
 /** The download URL must point to this repository's own release files, whatever the API answered. */
@@ -70,9 +85,9 @@ export function isOwnReleaseUrl(url: string, repo: string): boolean {
   }
 }
 
-export function toUpdateInfo(release: ReleaseInfo, current: string, platform: string, state: { downloaded: boolean; downloading: boolean }): UpdateInfo {
+export function toUpdateInfo(release: ReleaseInfo, current: string, platform: string, state: { downloaded: boolean; downloading: boolean }, opts: PickOptions = {}): UpdateInfo {
   const hasUpdate = compareVersions(release.version, current) > 0;
-  const asset = hasUpdate ? pickInstallerAsset(release.assets, platform) : null;
+  const asset = hasUpdate ? pickInstallerAsset(release.assets, platform, opts) : null;
   return {
     configured: true,
     current,
@@ -87,4 +102,13 @@ export function toUpdateInfo(release: ReleaseInfo, current: string, platform: st
 
 export function noUpdateSource(current: string): UpdateInfo {
   return { configured: false, current, latest: null, url: null, hasUpdate: false, assetName: null, downloaded: false, downloading: false };
+}
+
+/** The repository exists but has no published release yet (GitHub answers 404 on /releases/latest). */
+export function isNoReleaseError(e: unknown): boolean {
+  return e instanceof Error && /\bHTTP 404\b/.test(e.message);
+}
+
+export function noReleasesYet(current: string): UpdateInfo {
+  return { ...noUpdateSource(current), configured: true };
 }

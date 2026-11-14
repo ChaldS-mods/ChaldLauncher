@@ -1,0 +1,113 @@
+# Публикует релиз на GitHub, из которого лаунчер обновляет сам себя.
+#
+# Как выпустить версию:
+#   1. поднять "version" в package.json (например 0.3.6) и закоммитить;
+#   2. git tag v0.3.6 && git push origin v0.3.6
+#
+# Файлы релиза (имена важны: по ним лаунчер выбирает, что скачивать):
+#   ChaldLauncher-Setup.exe             Windows, автообновление
+#   ChaldLauncher-win-x64.zip           Windows без установки
+#   ChaldLauncher-<версия>-linux-x64.AppImage   Linux, автообновление (заменяет сам себя)
+#   ChaldLauncher-<версия>-linux-x64.tar.gz     Linux, архив (без автообновления)
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Тег существующего релиза-черновика или нового релиза (например v0.3.6)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Тег должен совпадать с версией в package.json
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "${TAG#v}" != "$VERSION" ]; then
+            echo "::error::Тег $TAG не совпадает с версией package.json ($VERSION). Лаунчер сравнивает именно эти два числа: при расхождении обновление предлагалось бы бесконечно."
+            exit 1
+          fi
+
+  windows:
+    needs: check-version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci
+      # лаунчер (release/win-unpacked) -> свой установщик (installer/release/ChaldLauncher-Setup.exe)
+      - run: npm run installer
+      - name: ZIP без установки
+        shell: pwsh
+        run: Compress-Archive -Path release/win-unpacked/* -DestinationPath ChaldLauncher-win-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          if-no-files-found: error
+          path: |
+            installer/release/ChaldLauncher-Setup.exe
+            ChaldLauncher-win-x64.zip
+
+  linux:
+    needs: check-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci
+      - run: npm run dist:linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          if-no-files-found: error
+          path: |
+            release/*.AppImage
+            release/*.tar.gz
+
+  publish:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Создать релиз (черновик с файлами, затем публикация)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ls -la assets
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" assets/* --clobber
+          else
+            gh release create "$TAG" assets/* --draft --verify-tag --title "ChaldLauncher ${TAG#v}" --notes-file notes.md
+          fi
+          gh release edit "$TAG" --draft=false --latest

@@ -181,6 +181,9 @@
 .md pre code { padding: 0; background: transparent; }
 .md blockquote { margin: 0 0 var(--s-3); padding-left: var(--s-3); border-left: 3px solid var(--border-strong); color: var(--text-dim); }
 .md hr { border: 0; border-top: 1px solid var(--border-soft); margin: var(--s-4) 0; }
+.md img, .md video, .md iframe { max-width: 100%; height: auto; display: block; margin: var(--s-3) 0; border-radius: var(--r-sm); }
+.md * { max-width: 100%; }
+.mr-about > .md { min-width: 0; overflow: hidden; }
 @media (max-width: 1100px) { .mr-about { grid-template-columns: minmax(0, 1fr); } }
 
 /* ---------- memory sliders ---------- */
@@ -264,3 +267,47 @@
 .mojang-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: var(--s-4); align-items: start; }
 .mojang-card h3 .badge { margin-left: auto; }
 .mojang-card h4 { font-family: var(--font-body); font-size: 14px; font-weight: 500; color: var(--text); }
+
+
+.page-head__actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--s-2);
+  margin-left: auto;
+}
+/* Pixel font has no CJK glyphs — use clean UI font for long project text */
+.mr-desc--unicode {
+  font-family: var(--font-body), "Noto Sans", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  word-break: break-word;
+}
+
+/* ---------- import from other launchers ---------- */
+.limp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--s-3); }
+.limp-tile { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: var(--s-4) var(--s-3); background: var(--bg-deep); border: 1px solid var(--border-soft); border-radius: var(--r-md); color: inherit; text-align: center; cursor: default; opacity: 0.5; }
+.limp-tile.is-found { opacity: 1; cursor: pointer; }
+.limp-tile.is-found:hover, .limp-tile.is-found:focus-visible { border-color: var(--accent); box-shadow: var(--glow); }
+.limp-tile__name { font-weight: 600; }
+.limp-tile__sub { font-size: 12px; }
+.limp-strip { display: flex; flex-wrap: wrap; gap: 10px; }
+.limp-strip__item { display: inline-flex; border-radius: 8px; overflow: hidden; }
+.limp-folder { display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; background: var(--bg-deep); border: 1px solid var(--border-soft); }
+.limp-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.limp-list { max-height: min(380px, 45vh); overflow: auto; }
+.limp-bad { opacity: 0.6; }
+
+/* ---------- drop files on the mods page ---------- */
+.drop-overlay { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: color-mix(in srgb, var(--bg-deep) 82%, transparent); border: 3px dashed var(--accent); border-radius: var(--r-md); color: var(--accent); pointer-events: none; font-size: 18px; }
+
+/* ---------- share build picker ---------- */
+.share-list { max-height: 340px; overflow-y: auto; }
+.share-item {
+  width: 100%; display: flex; align-items: center; gap: var(--s-3); text-align: left;
+  padding: var(--s-2) var(--s-3); background: var(--surface); border: 1px solid var(--border-soft);
+  border-radius: var(--r-md); color: inherit;
+}
+.share-item:hover { border-color: var(--border); }
+.share-item.is-picked { border-color: var(--cyan); background: rgba(var(--accent-rgb), 0.12); }
+.share-item__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.share-item__body strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.share-item__check { width: 20px; color: var(--cyan); display: grid; place-items: center; }
+.share-opt { display: flex; align-items: center; gap: var(--s-2); margin-top: var(--s-3); cursor: pointer; }

@@ -107,7 +107,9 @@ class GameManager {
             throw new errors_1.AppError('NOT_INSTALLED', 'Инстанс не установлен. Запусти установку.');
         const settings = await this.d.getSettings();
         this.progress(id, 'Проверка аккаунта…', null);
-        const auth = await this.d.auth.getLaunchAuth();
+        const auth = await this.d.auth.getLaunchAuth({ offlineFallback: true });
+        if (auth.offlineFallback)
+            this.progress(id, 'Серверы лицензии недоступны: запуск в офлайн-режиме…', null);
         this.progress(id, 'Проверка файлов игры…', null);
         const problems = await (0, installer_1.verifyInstall)(dirs, meta.versionId);
         if (problems.length)
@@ -150,6 +152,10 @@ class GameManager {
             versionName: (meta.loader.type === 'forge' || meta.loader.type === 'neoforge') ? version.inheritsFrom : undefined,
         });
         this.logs.set(id, []);
+        if (auth.offlineFallback) {
+            this.pushLog(id, `[launcher] Серверы лицензии недоступны. Игра запускается офлайн с ником ${auth.name} и UUID ${auth.uuid} (как у аккаунта). Серверы с проверкой лицензии, скины и чат с подписью в этом запуске не работают.`);
+            this.d.onNotice?.({ instanceId: id, kind: 'offline-fallback', name: auth.name });
+        }
         this.pushLog(id, `[launcher] ${(0, launchArgs_1.redact)([cmd.command, ...cmd.args].join(' '), cmd.secrets)}`);
         this.pushLog(id, `[launcher] память: ${minMb}–${maxMb} МБ (${auto ? 'подобрана автоматически' : s.memoryMinMb != null && s.memoryMaxMb != null ? 'свои настройки инстанса' : 'из настроек'}), ОЗУ компьютера: ${totalMb} МБ`);
         const warn = (0, memory_2.memoryWarning)(maxMb, totalMb);
@@ -159,6 +165,17 @@ class GameManager {
             this.pushLog(id, '[launcher] Предупреждение: системе остаётся меньше 1,5 ГБ ОЗУ, возможны подвисания компьютера.');
         const child = (0, node_child_process_1.spawn)(cmd.command, cmd.args, { cwd: cmd.cwd, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
         this.procs.set(id, child);
+        // Play time: saved every 2 minutes while the game runs and once more when it exits, so a crash of the launcher loses little.
+        let counted = Date.now();
+        const flushPlayTime = () => {
+            const sec = Math.floor((Date.now() - counted) / 1000);
+            if (sec <= 0)
+                return;
+            counted += sec * 1000;
+            void instances.addPlayTime(id, sec).catch(() => undefined);
+        };
+        const playTimer = setInterval(flushPlayTime, 120_000);
+        playTimer.unref();
         // Every listener is attached synchronously right after spawn(): an `await` in between lets the
         // 'spawn' / 'exit' events fire before anyone listens, which left the UI stuck on "Подготовка библиотек…".
         const pipeLines = (stream) => {
@@ -175,6 +192,8 @@ class GameManager {
         pipeLines(child.stdout);
         pipeLines(child.stderr);
         child.once('exit', (code, sig) => {
+            clearInterval(playTimer);
+            flushPlayTime();
             this.procs.delete(id);
             const crashed = (code !== null && code !== 0) || sig !== null;
             this.pushLog(id, `[launcher] процесс завершён, код: ${code ?? sig}`);
@@ -182,6 +201,7 @@ class GameManager {
         });
         await new Promise((resolve, reject) => {
             child.once('error', (err) => {
+                clearInterval(playTimer);
                 this.procs.delete(id);
                 reject(new errors_1.AppError('SPAWN_FAILED', `Не удалось запустить Java: ${err.message}`));
             });
